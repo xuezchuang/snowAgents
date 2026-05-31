@@ -1,0 +1,19 @@
+[package]
+name = "snowagent-desktop"
+version = "0.1.0"
+description = "SnowAgent Desktop MVP"
+authors = ["SnowAgent"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tiny_http = "0.12"
+uuid = { version = "1", features = ["v4", "serde"] }
