@@ -22,7 +22,7 @@ function CodeLink({
   const handleClick = async () => {
     try {
       await openCodeLink(projectId, rawLink, taskId)
-      onResult?.('Opened in Visual Studio')
+      onResult?.('Opened in Visual Studio.')
     } catch (caught) {
       onError?.(caught instanceof Error ? caught.message : String(caught))
     } finally {

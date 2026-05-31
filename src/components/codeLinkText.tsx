@@ -42,3 +42,8 @@ export function renderTextWithCodeLinks(
 
   return nodes.length > 0 ? nodes : [text]
 }
+
+export function extractCodeLinksFromText(text: string): string[] {
+  codeLinkPattern.lastIndex = 0
+  return Array.from(text.matchAll(codeLinkPattern), (match) => match[0])
+}

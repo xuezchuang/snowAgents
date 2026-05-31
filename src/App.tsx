@@ -1,37 +1,52 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { FolderKanban, Settings as SettingsIcon } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
 import './App.css'
 import { getSettings, listProjects } from './api/tauriApi'
-import ProjectDetail from './components/ProjectDetail'
 import ProjectList from './components/ProjectList'
 import Settings from './components/Settings'
-import type { ProjectSession } from './types/project'
-import type { AppSettings } from './types/settings'
-
-type View = 'projects' | 'settings'
+import Sidebar from './components/Sidebar'
+import Toast from './components/Toast'
+import type { ToastState } from './components/Toast'
+import Workspace from './components/Workspace'
+import {
+  ensureWorkspaceProject,
+  initialAppState,
+  latestTaskIdForProject,
+  normalizeSettings,
+} from './state/appState'
+import type { AppState, View } from './state/appState'
 
 function App() {
   const [view, setView] = useState<View>('projects')
-  const [projects, setProjects] = useState<ProjectSession[]>([])
-  const [settings, setSettings] = useState<AppSettings | null>(null)
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [appState, setAppState] = useState<AppState>(initialAppState)
+  const [toast, setToast] = useState<ToastState | null>(null)
+  const visualStyle = appState.settings?.uiPreferences.visualStyle ?? 'codex'
+
+  const showToast = useCallback((kind: ToastState['kind'], message: string) => {
+    const id = Date.now()
+    setToast({ id, kind, message })
+    window.setTimeout(() => {
+      setToast((current) => (current?.id === id ? null : current))
+    }, 3000)
+  }, [])
 
   const refreshProjects = useCallback(async () => {
     const nextProjects = await listProjects()
-    setProjects(nextProjects)
-    setSelectedProjectId((current) => {
-      if (!current) {
-        return current
+    setAppState((current) => {
+      const activeProjectId =
+        current.activeProjectId &&
+        nextProjects.some((project) => project.id === current.activeProjectId)
+          ? current.activeProjectId
+          : null
+      const nextState = {
+        ...current,
+        projects: nextProjects,
+        activeProjectId,
       }
-      return nextProjects.some((project) => project.id === current) ? current : null
+      return {
+        ...nextState,
+        currentWorkspaceTaskId: latestTaskIdForProject(nextState, activeProjectId),
+      }
     })
-  }, [])
-
-  const refreshSettings = useCallback(async () => {
-    const nextSettings = await getSettings()
-    setSettings(nextSettings)
   }, [])
 
   useEffect(() => {
@@ -39,18 +54,23 @@ function App() {
 
     const load = async () => {
       try {
-        const [nextProjects, nextSettings] = await Promise.all([
+        const [nextProjects, rawSettings] = await Promise.all([
           listProjects(),
           getSettings(),
         ])
-        if (!cancelled) {
-          setProjects(nextProjects)
-          setSettings(nextSettings)
-          setError(null)
+        if (cancelled) {
+          return
         }
+        const settings = normalizeSettings(rawSettings)
+        setAppState((current) => ({
+          ...current,
+          projects: nextProjects,
+          settings,
+          providers: settings.providers,
+        }))
       } catch (caught) {
         if (!cancelled) {
-          setError(toMessage(caught))
+          showToast('error', toMessage(caught))
         }
       }
     }
@@ -60,102 +80,94 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [showToast])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
       void refreshProjects().catch((caught) => {
-        setError(toMessage(caught))
+        showToast('error', toMessage(caught))
       })
     }, 3000)
 
     return () => {
       window.clearInterval(intervalId)
     }
-  }, [refreshProjects])
+  }, [refreshProjects, showToast])
 
-  const selectedProject = useMemo(
-    () => projects.find((project) => project.id === selectedProjectId) ?? null,
-    [projects, selectedProjectId],
-  )
+  const navigate = (nextView: View) => {
+    if (nextView === 'workspace') {
+      setAppState((current) => ensureWorkspaceProject(current))
+    }
+    setView(nextView)
+  }
 
-  const handleError = useCallback((message: string) => {
-    setError(message)
-    setNotice(null)
-  }, [])
+  const openWorkspace = (projectId: string) => {
+    setAppState((current) => ({
+      ...current,
+      activeProjectId: projectId,
+      currentWorkspaceTaskId: latestTaskIdForProject(current, projectId),
+      traceDrawerOpen: false,
+    }))
+    setView('workspace')
+  }
 
-  const handleNotice = useCallback((message: string) => {
-    setNotice(message)
-    setError(null)
-  }, [])
+  const handleSettingsChanged = (settings: AppState['settings']) => {
+    if (!settings) {
+      return
+    }
+    const normalized = normalizeSettings(settings)
+    setAppState((current) => ({
+      ...current,
+      settings: normalized,
+      providers: normalized.providers,
+    }))
+  }
 
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">S</div>
-          <div>
-            <h1>SnowAgent</h1>
-            <span>Desktop MVP</span>
+    <div className={`app-root ${visualStyle === 'codex' ? 'codex-style' : 'classic-style'}`}>
+      <div className="app-shell">
+        <Sidebar view={view} onNavigate={navigate} />
+
+        <main className="main-panel">
+          <Toast toast={toast} onDismiss={() => setToast(null)} />
+
+          <div className="main-scroll">
+            {view === 'projects' ? (
+              <ProjectList
+                projects={appState.projects}
+                activeProjectId={appState.activeProjectId}
+                onOpenWorkspace={openWorkspace}
+                onRefresh={refreshProjects}
+                onError={(message) => showToast('error', message)}
+                onNotice={(message) => showToast('notice', message)}
+              />
+            ) : null}
+
+            {view === 'workspace' ? (
+              <Workspace
+                state={appState}
+                setState={setAppState}
+                onRefreshProjects={refreshProjects}
+                onGlobalNotice={(message) => showToast('notice', message)}
+                onGlobalError={(message) => showToast('error', message)}
+              />
+            ) : null}
+
+            {view === 'settings' ? (
+              <Settings
+                settings={appState.settings}
+                providers={appState.providers}
+                onSettingsChanged={handleSettingsChanged}
+                onProvidersChanged={(providers) =>
+                  setAppState((current) => ({ ...current, providers }))
+                }
+                onError={(message) => showToast('error', message)}
+                onNotice={(message) => showToast('notice', message)}
+              />
+            ) : null}
           </div>
-        </div>
-        <nav className="nav">
-          <button
-            type="button"
-            className={view === 'projects' ? 'nav-item active' : 'nav-item'}
-            onClick={() => setView('projects')}
-          >
-            <FolderKanban size={18} aria-hidden="true" />
-            Projects
-          </button>
-          <button
-            type="button"
-            className={view === 'settings' ? 'nav-item active' : 'nav-item'}
-            onClick={() => setView('settings')}
-          >
-            <SettingsIcon size={18} aria-hidden="true" />
-            Settings
-          </button>
-        </nav>
-      </aside>
-
-      <main className="workspace">
-        {(error || notice) && (
-          <div className={error ? 'banner error' : 'banner notice'}>
-            {error ?? notice}
-          </div>
-        )}
-
-        {view === 'projects' && selectedProject ? (
-          <ProjectDetail
-            project={selectedProject}
-            onBack={() => setSelectedProjectId(null)}
-            onError={handleError}
-            onNotice={handleNotice}
-            onProjectChanged={refreshProjects}
-          />
-        ) : null}
-
-        {view === 'projects' && !selectedProject ? (
-          <ProjectList
-            projects={projects}
-            selectedProjectId={selectedProjectId}
-            onOpenProject={setSelectedProjectId}
-            onRefresh={refreshProjects}
-            onError={handleError}
-            onNotice={handleNotice}
-          />
-        ) : null}
-
-        {view === 'settings' ? (
-          <Settings
-            settings={settings}
-            onRefresh={refreshSettings}
-            onError={handleError}
-            onNotice={handleNotice}
-          />
-        ) : null}
-      </main>
+        </main>
+      </div>
     </div>
   )
 }

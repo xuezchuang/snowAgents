@@ -7,12 +7,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::path_utils::normalize_display_path;
 
+pub const MINIMAX_OPENAI_BASE_URL: &str = "https://api.minimaxi.com/v1";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub devenv_path: Option<String>,
     pub data_dir: String,
+    #[serde(default = "default_provider_notes")]
     pub provider_notes: String,
+    #[serde(default = "default_ui_preferences")]
+    pub ui_preferences: UiPreferences,
+    #[serde(default = "default_providers")]
+    pub providers: Vec<ProviderConfig>,
 }
 
 impl Default for AppSettings {
@@ -20,9 +27,9 @@ impl Default for AppSettings {
         Self {
             devenv_path: None,
             data_dir: String::new(),
-            provider_notes:
-                "Provider configuration placeholder. Real API calls are not enabled in the MVP."
-                    .to_string(),
+            provider_notes: default_provider_notes(),
+            ui_preferences: default_ui_preferences(),
+            providers: default_providers(),
         }
     }
 }
@@ -32,6 +39,48 @@ impl Default for AppSettings {
 pub struct SettingsInput {
     pub devenv_path: Option<String>,
     pub provider_notes: Option<String>,
+    pub ui_preferences: Option<UiPreferences>,
+    pub providers: Option<Vec<ProviderConfig>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiPreferences {
+    pub show_trace_button: bool,
+    pub auto_open_trace_on_errors: bool,
+    pub default_workspace_layout: String,
+    #[serde(default = "default_visual_style")]
+    pub visual_style: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConfig {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub provider_type: String,
+    pub name: String,
+    pub enabled: bool,
+    pub base_url: String,
+    #[serde(default)]
+    pub base_url_locked: bool,
+    pub api_key: String,
+    pub default_model: String,
+    pub temperature: f64,
+    #[serde(default)]
+    pub models: Vec<ProviderModel>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderModel {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub owned_by: Option<String>,
+    #[serde(default)]
+    pub created: Option<i64>,
 }
 
 pub struct SettingsStore {
@@ -58,6 +107,10 @@ impl SettingsStore {
                 store.save()?;
             }
         }
+        if store.settings.providers.is_empty() {
+            store.settings.providers = default_providers();
+            store.save()?;
+        }
         Ok(store)
     }
 
@@ -81,6 +134,12 @@ impl SettingsStore {
         if let Some(notes) = input.provider_notes {
             self.settings.provider_notes = notes;
         }
+        if let Some(preferences) = input.ui_preferences {
+            self.settings.ui_preferences = normalize_ui_preferences(preferences);
+        }
+        if let Some(providers) = input.providers {
+            self.settings.providers = normalize_providers(providers);
+        }
         self.save()?;
         Ok(self.current())
     }
@@ -95,6 +154,120 @@ impl SettingsStore {
         fs::write(&self.path, text)
             .map_err(|error| format!("JSON 设置写入失败 {}: {error}", self.path.display()))
     }
+}
+
+fn default_provider_notes() -> String {
+    "Provider configuration placeholder. Real API calls are not enabled in the MVP.".to_string()
+}
+
+fn default_ui_preferences() -> UiPreferences {
+    UiPreferences {
+        show_trace_button: true,
+        auto_open_trace_on_errors: true,
+        default_workspace_layout: "chat-only".to_string(),
+        visual_style: default_visual_style(),
+    }
+}
+
+fn default_visual_style() -> String {
+    "codex".to_string()
+}
+
+fn default_providers() -> Vec<ProviderConfig> {
+    vec![
+        provider("openai-compatible", "openai-compatible", "OpenAI-Compatible", "gpt-4.1"),
+        provider("claude", "claude", "Claude", "Claude 4.1 Sonnet"),
+        provider("deepseek", "deepseek", "DeepSeek", "deepseek-chat"),
+        provider("minimax", "minimax", "MiniMax", "MiniMax-M2.7"),
+        ProviderConfig {
+            id: "ollama".to_string(),
+            provider_type: "ollama".to_string(),
+            name: "Ollama".to_string(),
+            enabled: false,
+            base_url: "http://127.0.0.1:11434".to_string(),
+            base_url_locked: false,
+            api_key: String::new(),
+            default_model: "llama3.1".to_string(),
+            temperature: 0.2,
+            models: Vec::new(),
+        },
+        provider("local-gateway", "local-gateway", "Local Gateway", "local-default"),
+    ]
+}
+
+fn provider(id: &str, provider_type: &str, name: &str, default_model: &str) -> ProviderConfig {
+    ProviderConfig {
+        id: id.to_string(),
+        provider_type: provider_type.to_string(),
+        name: name.to_string(),
+        enabled: false,
+        base_url: if id == "minimax" {
+            MINIMAX_OPENAI_BASE_URL.to_string()
+        } else {
+            String::new()
+        },
+        base_url_locked: id == "minimax",
+        api_key: String::new(),
+        default_model: default_model.to_string(),
+        temperature: 0.2,
+        models: Vec::new(),
+    }
+}
+
+fn normalize_ui_preferences(preferences: UiPreferences) -> UiPreferences {
+    let default_workspace_layout = match preferences.default_workspace_layout.as_str() {
+        "split-chat-trace" => "split-chat-trace",
+        _ => "chat-only",
+    }
+    .to_string();
+    let visual_style = match preferences.visual_style.as_str() {
+        "snowagent" => "snowagent",
+        _ => "codex",
+    }
+    .to_string();
+
+    UiPreferences {
+        default_workspace_layout,
+        visual_style,
+        ..preferences
+    }
+}
+
+fn normalize_providers(providers: Vec<ProviderConfig>) -> Vec<ProviderConfig> {
+    providers
+        .into_iter()
+        .map(|provider| ProviderConfig {
+            id: provider.id.trim().to_string(),
+            provider_type: provider.provider_type.trim().to_string(),
+            name: provider.name.trim().to_string(),
+            base_url: if provider.id == "minimax" || provider.provider_type == "minimax" {
+                MINIMAX_OPENAI_BASE_URL.to_string()
+            } else {
+                provider.base_url.trim().to_string()
+            },
+            base_url_locked: provider.id == "minimax" || provider.provider_type == "minimax",
+            default_model: provider.default_model.trim().to_string(),
+            temperature: provider.temperature.clamp(0.0, 2.0),
+            models: provider
+                .models
+                .into_iter()
+                .map(|model| ProviderModel {
+                    id: model.id.trim().to_string(),
+                    name: if model.name.trim().is_empty() {
+                        model.id.trim().to_string()
+                    } else {
+                        model.name.trim().to_string()
+                    },
+                    enabled: model.enabled,
+                    owned_by: model.owned_by,
+                    created: model.created,
+                })
+                .filter(|model| !model.id.is_empty())
+                .collect(),
+            ..provider
+        })
+        .filter(|provider| !provider.id.is_empty() && !provider.name.is_empty())
+        .collect()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

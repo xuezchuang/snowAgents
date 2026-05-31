@@ -6,7 +6,10 @@ use crate::process_manager;
 use crate::project_registry::{ProjectInput, ProjectSession};
 use crate::tool_trace::{self, MockAgentRun, ToolTraceEvent, TraceEventType, TraceStatus};
 use crate::vs_bridge_service;
-use crate::vs_registry::{AppSettings, SettingsInput, VSInstance, VSRegisterPayload};
+use crate::vs_registry::{
+    AppSettings, ProviderModel, SettingsInput, VSInstance, VSRegisterPayload,
+    MINIMAX_OPENAI_BASE_URL,
+};
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -291,4 +294,59 @@ pub fn update_settings(
 ) -> Result<AppSettings, String> {
     let mut settings_store = state.settings.lock().map_err(|_| lock_error())?;
     settings_store.update(settings)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MiniMaxModelListResponse {
+    data: Vec<MiniMaxModel>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MiniMaxModel {
+    id: String,
+    created: Option<i64>,
+    owned_by: Option<String>,
+}
+
+#[tauri::command]
+pub async fn fetch_minimax_models(api_key: String) -> Result<Vec<ProviderModel>, String> {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        return Err("MiniMax API key is required.".to_string());
+    }
+
+    let url = format!("{MINIMAX_OPENAI_BASE_URL}/models");
+    let response = reqwest::Client::new()
+        .get(&url)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|error| format!("MiniMax model list request failed: {error}"))?;
+
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!(
+            "MiniMax model list request failed. status={}; body={}",
+            status.as_u16(),
+            body
+        ));
+    }
+
+    let parsed = serde_json::from_str::<MiniMaxModelListResponse>(&body)
+        .map_err(|error| format!("MiniMax model list response parse failed: {error}"))?;
+
+    Ok(parsed
+        .data
+        .into_iter()
+        .map(|model| ProviderModel {
+            name: model.id.clone(),
+            id: model.id,
+            enabled: false,
+            owned_by: model.owned_by,
+            created: model.created,
+        })
+        .collect())
 }

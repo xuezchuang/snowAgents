@@ -22,6 +22,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(state)
+        .plugin(tauri_plugin_dialog::init())
         .setup(move |_| {
             desktop_http_server::start(http_state.clone()).map_err(|error| {
                 Box::<dyn std::error::Error>::from(std::io::Error::new(
@@ -46,7 +47,8 @@ fn main() {
             commands::list_traces,
             commands::open_code_link,
             commands::get_settings,
-            commands::update_settings
+            commands::update_settings,
+            commands::fetch_minimax_models
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| {

@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { open } from '@tauri-apps/plugin-dialog'
 import type {
   OpenVisualStudioResult,
   ProjectInput,
@@ -11,6 +12,7 @@ import type {
   VSInstance,
   VSRegisterPayload,
 } from '../types/vs'
+import type { ProviderModel } from '../types/provider'
 
 declare global {
   interface Window {
@@ -105,6 +107,42 @@ export function updateSettings(settings: SettingsInput): Promise<AppSettings> {
   return call<AppSettings>('update_settings', { settings })
 }
 
+export function fetchMiniMaxModels(apiKey: string): Promise<ProviderModel[]> {
+  return call<ProviderModel[]>('fetch_minimax_models', { apiKey })
+}
+
+export async function browseDirectory(title: string): Promise<string | null> {
+  assertTauriBackend()
+  const selected = await open({
+    title,
+    directory: true,
+    multiple: false,
+  })
+  return singlePath(selected)
+}
+
+export async function browseSolutionFile(title: string): Promise<string | null> {
+  assertTauriBackend()
+  const selected = await open({
+    title,
+    directory: false,
+    multiple: false,
+    filters: [{ name: 'Visual Studio Solution', extensions: ['sln'] }],
+  })
+  return singlePath(selected)
+}
+
+export async function browseExecutableFile(title: string): Promise<string | null> {
+  assertTauriBackend()
+  const selected = await open({
+    title,
+    directory: false,
+    multiple: false,
+    filters: [{ name: 'Executable', extensions: ['exe'] }],
+  })
+  return singlePath(selected)
+}
+
 function toMessage(caught: unknown): string {
   if (caught instanceof Error) {
     return caught.message
@@ -118,4 +156,11 @@ function assertTauriBackend(): void {
       'Tauri backend is unavailable. Use npm.cmd run tauri dev after installing Rust/Cargo; npm.cmd run dev only serves the frontend.',
     )
   }
+}
+
+function singlePath(selected: string | string[] | null): string | null {
+  if (Array.isArray(selected)) {
+    return selected[0] ?? null
+  }
+  return selected
 }
