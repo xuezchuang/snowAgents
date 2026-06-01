@@ -27,3 +27,16 @@ export interface MockAgentRun {
   taskId: string
   traces: ToolTraceEvent[]
 }
+
+export interface AgentConversationMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface AgentRunInput {
+  projectId: string
+  userPrompt: string
+  messages?: AgentConversationMessage[]
+  providerId: string | null
+  modelId: string | null
+}

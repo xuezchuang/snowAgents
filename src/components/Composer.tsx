@@ -1,5 +1,5 @@
-import { Mic, Paperclip, Send, Wrench } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { ArrowUp, Check, ChevronDown, Mic, Plus, Settings2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import type { ProviderConfig } from '../types/provider'
 import { getSelectableModels } from '../utils/providerModels'
@@ -9,13 +9,23 @@ interface ComposerProps {
   busy: boolean
   value: string
   onChange: (value: string) => void
-  onSend: (prompt: string) => void
+  onSend: (
+    prompt: string,
+    selection: { providerId: string | null; modelId: string | null },
+  ) => void
 }
 
 function Composer({ providers, busy, value, onChange, onSend }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const canSend = value.trim().length > 0 && !busy
-  const selectableModels = getSelectableModels(providers)
+  const modelPickerRef = useRef<HTMLDivElement>(null)
+  const [selectedModelId, setSelectedModelId] = useState('')
+  const [modelMenuOpen, setModelMenuOpen] = useState(false)
+  const selectableModels = useMemo(() => getSelectableModels(providers), [providers])
+  const selectedModel =
+    selectableModels.find((model) => model.id === selectedModelId) ??
+    selectableModels[0] ??
+    null
+  const canSend = value.trim().length > 0 && !busy && selectedModel !== null
 
   useEffect(() => {
     const textarea = textareaRef.current
@@ -27,11 +37,33 @@ function Composer({ providers, busy, value, onChange, onSend }: ComposerProps) {
     textarea.style.height = `${nextHeight}px`
   }, [value])
 
+  useEffect(() => {
+    if (!modelMenuOpen) {
+      return
+    }
+
+    const closeOnOutsideClick = (event: Event) => {
+      if (
+        modelPickerRef.current &&
+        event.target instanceof Node &&
+        !modelPickerRef.current.contains(event.target)
+      ) {
+        setModelMenuOpen(false)
+      }
+    }
+
+    document.addEventListener('pointerdown', closeOnOutsideClick)
+    return () => document.removeEventListener('pointerdown', closeOnOutsideClick)
+  }, [modelMenuOpen])
+
   const send = () => {
     if (!canSend) {
       return
     }
-    onSend(value.trim())
+    onSend(value.trim(), {
+      providerId: selectedModel?.providerId ?? null,
+      modelId: selectedModel?.modelId ?? null,
+    })
     onChange('')
   }
 
@@ -51,7 +83,7 @@ function Composer({ providers, busy, value, onChange, onSend }: ComposerProps) {
           value={value}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask SnowAgent to inspect, edit, or explain code..."
+          placeholder="Ask for follow-up changes"
           rows={1}
           disabled={busy}
         />
@@ -63,28 +95,57 @@ function Composer({ providers, busy, value, onChange, onSend }: ComposerProps) {
               title="Attach file/image"
               aria-label="Attach file/image"
             >
-              <Paperclip size={16} aria-hidden="true" />
+              <Plus size={18} aria-hidden="true" />
             </button>
             <button type="button" className="composer-mode-button" title="Tools">
-              <Wrench size={15} aria-hidden="true" />
-              <span>Agent mode</span>
+              <Settings2 size={15} aria-hidden="true" />
+              <span>Custom</span>
               <span className="button-caret" aria-hidden="true">
                 v
               </span>
             </button>
           </div>
           <div className="composer-action-group">
-            <select
-              className="composer-model-select"
-              defaultValue={selectableModels[0]?.id ?? ''}
-              aria-label="Model"
-            >
-              {selectableModels.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.modelId}
-                </option>
-              ))}
-            </select>
+            <div className="composer-model-picker" ref={modelPickerRef}>
+              <button
+                type="button"
+                className="composer-model-trigger"
+                aria-haspopup="listbox"
+                aria-expanded={modelMenuOpen}
+                onClick={() => setModelMenuOpen((open) => !open)}
+                disabled={selectableModels.length === 0}
+                title={selectedModel?.label ?? 'Enable a provider in Settings'}
+              >
+                <span>{selectedModel?.modelId ?? 'No enabled model'}</span>
+                <ChevronDown size={14} aria-hidden="true" />
+              </button>
+              {modelMenuOpen ? (
+                <div className="composer-model-menu" role="listbox" aria-label="Model">
+                  {selectableModels.map((model) => (
+                    <button
+                      type="button"
+                      key={model.id}
+                      className={
+                        model.id === selectedModel?.id ?
+                          'composer-model-option selected'
+                        : 'composer-model-option'
+                      }
+                      role="option"
+                      aria-selected={model.id === selectedModel?.id}
+                      onClick={() => {
+                        setSelectedModelId(model.id)
+                        setModelMenuOpen(false)
+                      }}
+                    >
+                      <span>{model.modelId}</span>
+                      {model.id === selectedModel?.id ? (
+                        <Check size={15} aria-hidden="true" />
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
             <button
               type="button"
               className="composer-icon-button"
@@ -99,12 +160,16 @@ function Composer({ providers, busy, value, onChange, onSend }: ComposerProps) {
               onClick={send}
               disabled={!canSend}
               aria-label={busy ? 'Running' : 'Send'}
-              title={busy ? 'Running' : 'Send'}
+              title={
+                busy ? 'Running'
+                : selectedModel ? 'Send'
+                : 'Enable a provider in Settings'
+              }
             >
               {busy ? (
                 <span className="send-spinner" aria-hidden="true" />
               ) : (
-                <Send size={16} aria-hidden="true" />
+                <ArrowUp size={18} aria-hidden="true" />
               )}
             </button>
           </div>

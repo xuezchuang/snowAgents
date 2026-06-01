@@ -1,5 +1,6 @@
 use tauri::State;
 
+use crate::agent_runner::{self, AgentRunInput};
 use crate::app_state::{current_settings, lock_error, AppState};
 use crate::code_link::{self, OpenCodeLinkResult, OpenFilePayload};
 use crate::process_manager;
@@ -125,6 +126,26 @@ pub fn run_mock_agent(
     };
 
     let run = tool_trace::create_mock_agent_run(&project, &user_prompt);
+    let mut traces = state.traces.lock().map_err(|_| lock_error())?;
+    traces.insert_task(run.task_id.clone(), run.traces.clone());
+    Ok(run)
+}
+
+#[tauri::command]
+pub async fn run_agent(
+    state: State<'_, AppState>,
+    input: AgentRunInput,
+) -> Result<MockAgentRun, String> {
+    let project = {
+        let projects = state.projects.lock().map_err(|_| lock_error())?;
+        projects.get(&input.project_id)?
+    };
+    let settings = {
+        let settings_store = state.settings.lock().map_err(|_| lock_error())?;
+        current_settings(&settings_store)
+    };
+
+    let run = agent_runner::run_agent(&project, &settings, input).await?;
     let mut traces = state.traces.lock().map_err(|_| lock_error())?;
     traces.insert_task(run.task_id.clone(), run.traces.clone());
     Ok(run)

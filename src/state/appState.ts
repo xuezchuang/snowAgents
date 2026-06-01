@@ -4,7 +4,11 @@ import type { ProjectSession } from '../types/project'
 import type { AppSettings, UiPreferences } from '../types/settings'
 import type { AgentTask } from '../types/task'
 
-export type View = 'projects' | 'workspace' | 'settings'
+export type View = 'projects' | 'workspace' | 'profile' | 'settings'
+type PersistedWorkspaceState = Pick<
+  AppState,
+  'activeProjectId' | 'currentWorkspaceTaskId' | 'tasksById' | 'taskIdsByProjectId'
+>
 
 export interface AppState {
   projects: ProjectSession[]
@@ -22,6 +26,7 @@ export const defaultUiPreferences: UiPreferences = {
   autoOpenTraceOnErrors: true,
   defaultWorkspaceLayout: 'chat-only',
   visualStyle: 'codex',
+  workspaceHistoryDays: 7,
 }
 
 export const defaultProviders: ProviderConfig[] = [
@@ -110,6 +115,8 @@ export const initialAppState: AppState = {
   taskIdsByProjectId: {},
 }
 
+const workspaceHistoryStorageKey = 'snowagent.workspaceHistory.v1'
+
 export function normalizeSettings(settings: AppSettings): AppSettings {
   const providers =
     settings.providers && settings.providers.length > 0
@@ -152,6 +159,48 @@ export function ensureWorkspaceProject(state: AppState): AppState {
   }
 }
 
+export function loadPersistedWorkspaceState(): PersistedWorkspaceState {
+  if (typeof window === 'undefined') {
+    return emptyPersistedWorkspaceState()
+  }
+  try {
+    const raw = window.localStorage.getItem(workspaceHistoryStorageKey)
+    if (!raw) {
+      return emptyPersistedWorkspaceState()
+    }
+    const parsed: unknown = JSON.parse(raw)
+    if (!isRecord(parsed)) {
+      return emptyPersistedWorkspaceState()
+    }
+    const tasksById = readTasksById(parsed.tasksById)
+    return {
+      activeProjectId: readNullableString(parsed.activeProjectId),
+      currentWorkspaceTaskId: readNullableString(parsed.currentWorkspaceTaskId),
+      tasksById,
+      taskIdsByProjectId: readTaskIdsByProjectId(parsed.taskIdsByProjectId, tasksById),
+    }
+  } catch {
+    return emptyPersistedWorkspaceState()
+  }
+}
+
+export function persistWorkspaceState(state: AppState): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+  const payload: PersistedWorkspaceState = {
+    activeProjectId: state.activeProjectId,
+    currentWorkspaceTaskId: state.currentWorkspaceTaskId,
+    tasksById: state.tasksById,
+    taskIdsByProjectId: state.taskIdsByProjectId,
+  }
+  try {
+    window.localStorage.setItem(workspaceHistoryStorageKey, JSON.stringify(payload))
+  } catch {
+    // Best-effort UI history; the app can keep running if storage is unavailable.
+  }
+}
+
 function mergeProviders(providers: ProviderConfig[]): ProviderConfig[] {
   const providedById = new Map(providers.map((provider) => [provider.id, provider]))
   const mergedDefaults = defaultProviders.map((provider) => ({
@@ -171,4 +220,67 @@ function mergeProviders(providers: ProviderConfig[]): ProviderConfig[] {
     (provider) => !defaultProviders.some((defaultProvider) => defaultProvider.id === provider.id),
   )
   return [...mergedDefaults, ...customProviders]
+}
+
+function emptyPersistedWorkspaceState(): PersistedWorkspaceState {
+  return {
+    activeProjectId: null,
+    currentWorkspaceTaskId: null,
+    tasksById: {},
+    taskIdsByProjectId: {},
+  }
+}
+
+function readNullableString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+function readTasksById(value: unknown): Record<string, AgentTask> {
+  if (!isRecord(value)) {
+    return {}
+  }
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, AgentTask] =>
+      isAgentTask(entry[1]),
+    ),
+  )
+}
+
+function readTaskIdsByProjectId(
+  value: unknown,
+  tasksById: Record<string, AgentTask>,
+): Record<string, string[]> {
+  if (!isRecord(value)) {
+    return {}
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]))
+      .map(([projectId, taskIds]) => [
+        projectId,
+        taskIds.filter((taskId): taskId is string =>
+          typeof taskId === 'string' && tasksById[taskId] !== undefined,
+        ),
+      ]),
+  )
+}
+
+function isAgentTask(value: unknown): value is AgentTask {
+  if (!isRecord(value)) {
+    return false
+  }
+  return (
+    typeof value.id === 'string' &&
+    typeof value.projectId === 'string' &&
+    typeof value.prompt === 'string' &&
+    Array.isArray(value.messages) &&
+    Array.isArray(value.traceEvents) &&
+    (value.status === 'running' ||
+      value.status === 'completed' ||
+      value.status === 'failed')
+  )
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }

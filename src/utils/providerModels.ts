@@ -8,10 +8,11 @@ export interface SelectableModel {
 }
 
 export function getSelectableModels(providers: ProviderConfig[]): SelectableModel[] {
-  const enabledProviders = providers.filter((provider) => provider.enabled)
-  const sourceProviders = enabledProviders.length > 0 ? enabledProviders : providers
+  const enabledProviders = providers.filter(
+    (provider) => provider.enabled || provider.models.some((model) => model.enabled),
+  )
 
-  return sourceProviders.flatMap((provider) => {
+  return enabledProviders.flatMap((provider) => {
     const enabledModels = (provider.models ?? []).filter((model) => model.enabled)
     if (enabledModels.length > 0) {
       return enabledModels.map((model) => ({

@@ -51,6 +51,8 @@ pub struct UiPreferences {
     pub default_workspace_layout: String,
     #[serde(default = "default_visual_style")]
     pub visual_style: String,
+    #[serde(default = "default_workspace_history_days")]
+    pub workspace_history_days: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -157,7 +159,7 @@ impl SettingsStore {
 }
 
 fn default_provider_notes() -> String {
-    "Provider configuration placeholder. Real API calls are not enabled in the MVP.".to_string()
+    "Configure provider Base URL, API key, and model selection for real chat calls.".to_string()
 }
 
 fn default_ui_preferences() -> UiPreferences {
@@ -166,6 +168,7 @@ fn default_ui_preferences() -> UiPreferences {
         auto_open_trace_on_errors: true,
         default_workspace_layout: "chat-only".to_string(),
         visual_style: default_visual_style(),
+        workspace_history_days: default_workspace_history_days(),
     }
 }
 
@@ -173,9 +176,18 @@ fn default_visual_style() -> String {
     "codex".to_string()
 }
 
+fn default_workspace_history_days() -> u32 {
+    7
+}
+
 fn default_providers() -> Vec<ProviderConfig> {
     vec![
-        provider("openai-compatible", "openai-compatible", "OpenAI-Compatible", "gpt-4.1"),
+        provider(
+            "openai-compatible",
+            "openai-compatible",
+            "OpenAI-Compatible",
+            "gpt-4.1",
+        ),
         provider("claude", "claude", "Claude", "Claude 4.1 Sonnet"),
         provider("deepseek", "deepseek", "DeepSeek", "deepseek-chat"),
         provider("minimax", "minimax", "MiniMax", "MiniMax-M2.7"),
@@ -191,7 +203,12 @@ fn default_providers() -> Vec<ProviderConfig> {
             temperature: 0.2,
             models: Vec::new(),
         },
-        provider("local-gateway", "local-gateway", "Local Gateway", "local-default"),
+        provider(
+            "local-gateway",
+            "local-gateway",
+            "Local Gateway",
+            "local-default",
+        ),
     ]
 }
 
@@ -229,6 +246,7 @@ fn normalize_ui_preferences(preferences: UiPreferences) -> UiPreferences {
     UiPreferences {
         default_workspace_layout,
         visual_style,
+        workspace_history_days: preferences.workspace_history_days.clamp(1, 365),
         ..preferences
     }
 }

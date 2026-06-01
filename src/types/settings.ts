@@ -8,6 +8,7 @@ export interface UiPreferences {
   autoOpenTraceOnErrors: boolean
   defaultWorkspaceLayout: WorkspaceLayout
   visualStyle: VisualStyle
+  workspaceHistoryDays: number
 }
 
 export interface AppSettings {

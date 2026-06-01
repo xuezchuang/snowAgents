@@ -1,6 +1,15 @@
-import { Bot, UserRound } from 'lucide-react'
+import {
+  Bot,
+  Copy,
+  ExternalLink,
+  PanelRightOpen,
+  ThumbsDown,
+  ThumbsUp,
+  UserRound,
+} from 'lucide-react'
 import CodeLink from './CodeLink'
 import { renderTextWithCodeLinks } from './codeLinkText'
+import { sanitizeModelMessage } from './traceViewModel'
 import type { ChatMessage as ChatMessageModel } from '../types/task'
 
 interface ChatMessageProps {
@@ -8,7 +17,8 @@ interface ChatMessageProps {
   projectId: string
   onCodeLinkResult: (message: string) => void
   onCodeLinkError: (message: string) => void
-  onTraceChanged: () => void
+  onTraceChanged: (taskId: string) => void
+  onOpenTrace: (message: ChatMessageModel) => void
 }
 
 function ChatMessage({
@@ -17,8 +27,10 @@ function ChatMessage({
   onCodeLinkResult,
   onCodeLinkError,
   onTraceChanged,
+  onOpenTrace,
 }: ChatMessageProps) {
   const isUser = message.role === 'user'
+  const displayContent = isUser ? message.content : sanitizeModelMessage(message.content)
 
   return (
     <article className={isUser ? 'chat-message user' : 'chat-message assistant'}>
@@ -36,14 +48,62 @@ function ChatMessage({
         </div>
         <div className="message-content">
           {renderTextWithCodeLinks(
-            message.content,
+            displayContent,
             projectId,
             message.taskId,
             onCodeLinkResult,
             onCodeLinkError,
-            onTraceChanged,
+            () => onTraceChanged(message.taskId),
           )}
         </div>
+        {!isUser ? (
+          <div className="message-actions" aria-label="Message actions">
+            <button
+              type="button"
+              className="message-action-button"
+              aria-label="Copy response"
+              title="Copy response"
+              onClick={() => {
+                void navigator.clipboard.writeText(displayContent)
+              }}
+            >
+              <Copy size={15} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="message-action-button"
+              aria-label="Good response"
+              title="Good response"
+            >
+              <ThumbsUp size={15} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="message-action-button"
+              aria-label="Bad response"
+              title="Bad response"
+            >
+              <ThumbsDown size={15} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="message-action-button trace-message-button"
+              aria-label="Show response trace"
+              title="Show response trace"
+              onClick={() => onOpenTrace(message)}
+            >
+              <PanelRightOpen size={15} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="message-action-button"
+              aria-label="Open response"
+              title="Open response"
+            >
+              <ExternalLink size={15} aria-hidden="true" />
+            </button>
+          </div>
+        ) : null}
         {message.codeLinks && message.codeLinks.length > 0 ? (
           <div className="suggested-edit-card">
             <div>
@@ -59,7 +119,7 @@ function ChatMessage({
                   rawLink={link.rawLink}
                   onResult={onCodeLinkResult}
                   onError={onCodeLinkError}
-                  onTraceChanged={onTraceChanged}
+                  onTraceChanged={() => onTraceChanged(message.taskId)}
                 />
               ))}
             </div>

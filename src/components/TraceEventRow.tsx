@@ -5,19 +5,25 @@ import {
   ChevronRight,
   CircleAlert,
   Clock3,
+  LoaderCircle,
 } from 'lucide-react'
-import type { ToolTraceEvent } from '../types/trace'
-import { normalizeDisplayText, normalizePathsInValue } from '../utils/path'
+import type { TraceStepViewModel, TraceSummaryItem } from './traceViewModel'
 
 interface TraceEventRowProps {
-  event: ToolTraceEvent
+  step: TraceStepViewModel
 }
 
-function TraceEventRow({ event }: TraceEventRowProps) {
+const longTextLimit = 500
+
+function TraceEventRow({ step }: TraceEventRowProps) {
   const [expanded, setExpanded] = useState(false)
+  const [rawInputOpen, setRawInputOpen] = useState(false)
+  const [rawOutputOpen, setRawOutputOpen] = useState(false)
+  const rowClass =
+    step.status === 'failed' ? 'drawer-trace-row failed' : 'drawer-trace-row'
 
   return (
-    <article className={event.status === 'failed' ? 'drawer-trace-row failed' : 'drawer-trace-row'}>
+    <article className={rowClass}>
       <button
         type="button"
         className="drawer-trace-summary"
@@ -25,49 +31,117 @@ function TraceEventRow({ event }: TraceEventRowProps) {
         aria-expanded={expanded}
       >
         {expanded ? (
-          <ChevronDown size={16} aria-hidden="true" />
+          <ChevronDown className="trace-chevron" size={16} aria-hidden="true" />
         ) : (
-          <ChevronRight size={16} aria-hidden="true" />
+          <ChevronRight className="trace-chevron" size={16} aria-hidden="true" />
         )}
-        <span className="trace-step">{event.stepIndex}</span>
-        {event.status === 'failed' ? (
-          <CircleAlert className="status-icon failed" size={16} aria-hidden="true" />
-        ) : (
-          <CheckCircle2 className="status-icon success" size={16} aria-hidden="true" />
-        )}
-        <span className="trace-title">{normalizeDisplayText(event.title)}</span>
-        {event.toolName ? <span className="trace-tool">{event.toolName}</span> : null}
-        <span className={`trace-status ${event.status}`}>{event.status}</span>
+        <span className="trace-step">{step.index}</span>
+        <StatusIcon status={step.status} />
+        <span className="trace-title">{step.title}</span>
+        <span className={`trace-status ${step.status}`}>{step.status}</span>
         <span className="trace-duration">
           <Clock3 size={13} aria-hidden="true" />
-          {event.durationMs ?? 0} ms
+          {step.durationMs ?? 0} ms
         </span>
       </button>
 
       {expanded ? (
         <div className="trace-details">
-          {event.status === 'failed' ? (
-            <div className="trace-error">
-              {normalizeDisplayText(event.outputSummary ?? 'Tool call failed')}
-            </div>
+          {step.summaryItems.length > 0 ? (
+            <TraceSection title="Summary" items={step.summaryItems} />
           ) : null}
-          <JsonBlock label="input" value={event.input} />
-          <JsonBlock label="output" value={event.output} />
+          {step.inputSummary.length > 0 ? (
+            <TraceSection title="Input" items={step.inputSummary} />
+          ) : null}
+          {step.outputSummary.length > 0 ? (
+            <TraceSection title="Output" items={step.outputSummary} />
+          ) : null}
+          <RawToggle
+            label="View raw input"
+            value={step.rawInput}
+            open={rawInputOpen}
+            onToggle={() => setRawInputOpen((current) => !current)}
+          />
+          <RawToggle
+            label="View raw output"
+            value={step.rawOutput}
+            open={rawOutputOpen}
+            onToggle={() => setRawOutputOpen((current) => !current)}
+          />
         </div>
       ) : null}
     </article>
   )
 }
 
-function JsonBlock({ label, value }: { label: string; value: unknown | null }) {
+function StatusIcon({ status }: { status: TraceStepViewModel['status'] }) {
+  if (status === 'failed') {
+    return <CircleAlert className="status-icon failed" size={16} aria-hidden="true" />
+  }
+  if (status === 'running') {
+    return <LoaderCircle className="status-icon running" size={16} aria-hidden="true" />
+  }
+  return <CheckCircle2 className="status-icon success" size={16} aria-hidden="true" />
+}
+
+function TraceSection({ title, items }: { title: string; items: TraceSummaryItem[] }) {
+  return (
+    <section className="trace-section">
+      <h4>{title}</h4>
+      <div className="trace-summary-list">
+        {items.map((item) => (
+          <TraceSummaryRow item={item} key={item.label} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function TraceSummaryRow({ item }: { item: TraceSummaryItem }) {
+  const [expanded, setExpanded] = useState(false)
+  const isLong = item.value.length > longTextLimit
+  const value = isLong && !expanded ? `${item.value.slice(0, longTextLimit)}...` : item.value
+
+  return (
+    <div className={item.multiline ? 'trace-summary-row multiline' : 'trace-summary-row'}>
+      <span className="trace-summary-label">{item.label}</span>
+      <div className="trace-summary-value-wrap">
+        <span className="trace-summary-value">{value}</span>
+        {isLong ? (
+          <button
+            type="button"
+            className="trace-inline-button"
+            onClick={() => setExpanded((current) => !current)}
+          >
+            {expanded ? 'Collapse' : 'Show more'}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+function RawToggle({
+  label,
+  value,
+  open,
+  onToggle,
+}: {
+  label: string
+  value: unknown | null
+  open: boolean
+  onToggle: () => void
+}) {
   if (value === null || value === undefined) {
     return null
   }
 
   return (
-    <div className="json-block">
-      <div className="json-label">{label}</div>
-      <pre>{JSON.stringify(normalizePathsInValue(value), null, 2)}</pre>
+    <div className="trace-raw">
+      <button type="button" className="trace-raw-toggle" onClick={onToggle}>
+        {open ? label.replace('View', 'Hide') : label}
+      </button>
+      {open ? <pre className="trace-raw-code">{JSON.stringify(value, null, 2)}</pre> : null}
     </div>
   )
 }

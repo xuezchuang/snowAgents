@@ -1,12 +1,13 @@
 import ChatMessage from './ChatMessage'
-import type { AgentTask } from '../types/task'
+import type { AgentTask, ChatMessage as ChatMessageModel } from '../types/task'
 
 interface ChatTimelineProps {
   task: AgentTask | null
   projectId: string
   onCodeLinkResult: (message: string) => void
   onCodeLinkError: (message: string) => void
-  onTraceChanged: () => void
+  onTraceChanged: (taskId: string) => void
+  onOpenTrace: (message: ChatMessageModel) => void
   onSuggestionSelect: (prompt: string) => void
 }
 
@@ -16,6 +17,7 @@ function ChatTimeline({
   onCodeLinkResult,
   onCodeLinkError,
   onTraceChanged,
+  onOpenTrace,
   onSuggestionSelect,
 }: ChatTimelineProps) {
   if (!task) {
@@ -54,6 +56,7 @@ function ChatTimeline({
           onCodeLinkResult={onCodeLinkResult}
           onCodeLinkError={onCodeLinkError}
           onTraceChanged={onTraceChanged}
+          onOpenTrace={onOpenTrace}
         />
       ))}
     </div>

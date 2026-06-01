@@ -14,16 +14,6 @@ function UiPreferences({ preferences, onChange }: UiPreferencesProps) {
       <label className="toggle-row">
         <input
           type="checkbox"
-          checked={preferences.showTraceButton}
-          onChange={(event) =>
-            onChange({ ...preferences, showTraceButton: event.target.checked })
-          }
-        />
-        <span>Show trace button</span>
-      </label>
-      <label className="toggle-row">
-        <input
-          type="checkbox"
           checked={preferences.autoOpenTraceOnErrors}
           onChange={(event) =>
             onChange({
@@ -68,8 +58,32 @@ function UiPreferences({ preferences, onChange }: UiPreferencesProps) {
           <option value="split-chat-trace">Split: Chat + Trace</option>
         </select>
       </label>
+      <label>
+        Workspace history days
+        <input
+          type="number"
+          min={1}
+          max={365}
+          step={1}
+          value={preferences.workspaceHistoryDays}
+          onChange={(event) =>
+            onChange({
+              ...preferences,
+              workspaceHistoryDays: normalizeHistoryDays(event.target.value),
+            })
+          }
+        />
+      </label>
     </section>
   )
+}
+
+function normalizeHistoryDays(value: string): number {
+  const days = Number.parseInt(value, 10)
+  if (!Number.isFinite(days)) {
+    return 7
+  }
+  return Math.min(365, Math.max(1, days))
 }
 
 export default UiPreferences

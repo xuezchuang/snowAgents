@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent_runner;
 mod app_state;
 mod code_link;
 mod commands;
@@ -43,6 +44,7 @@ fn main() {
             commands::unregister_vs_instance,
             commands::heartbeat_vs_instance,
             commands::list_vs_instances,
+            commands::run_agent,
             commands::run_mock_agent,
             commands::list_traces,
             commands::open_code_link,

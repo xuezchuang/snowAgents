@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import './App.css'
 import { getSettings, listProjects } from './api/tauriApi'
+import Profile from './components/Profile'
 import ProjectList from './components/ProjectList'
 import Settings from './components/Settings'
 import Sidebar from './components/Sidebar'
@@ -11,15 +12,22 @@ import {
   ensureWorkspaceProject,
   initialAppState,
   latestTaskIdForProject,
+  loadPersistedWorkspaceState,
   normalizeSettings,
+  persistWorkspaceState,
 } from './state/appState'
 import type { AppState, View } from './state/appState'
+import type { AgentTask } from './types/task'
 
 function App() {
   const [view, setView] = useState<View>('projects')
-  const [appState, setAppState] = useState<AppState>(initialAppState)
+  const [appState, setAppState] = useState<AppState>(() => ({
+    ...initialAppState,
+    ...loadPersistedWorkspaceState(),
+  }))
   const [toast, setToast] = useState<ToastState | null>(null)
   const visualStyle = appState.settings?.uiPreferences.visualStyle ?? 'codex'
+  const historyDays = appState.settings?.uiPreferences.workspaceHistoryDays ?? 7
 
   const showToast = useCallback((kind: ToastState['kind'], message: string) => {
     const id = Date.now()
@@ -42,9 +50,23 @@ function App() {
         projects: nextProjects,
         activeProjectId,
       }
+      const projectTaskIds =
+        activeProjectId ? nextState.taskIdsByProjectId[activeProjectId] ?? [] : []
+      const currentTaskIsStillAvailable =
+        current.currentWorkspaceTaskId ?
+          projectTaskIds.includes(current.currentWorkspaceTaskId)
+        : false
+      const keepEmptyWorkspace =
+        current.activeProjectId === activeProjectId &&
+        current.currentWorkspaceTaskId === null
       return {
         ...nextState,
-        currentWorkspaceTaskId: latestTaskIdForProject(nextState, activeProjectId),
+        currentWorkspaceTaskId:
+          currentTaskIsStillAvailable ?
+            current.currentWorkspaceTaskId
+          : keepEmptyWorkspace ?
+            null
+          : latestTaskIdForProject(nextState, activeProjectId),
       }
     })
   }, [])
@@ -83,6 +105,10 @@ function App() {
   }, [showToast])
 
   useEffect(() => {
+    persistWorkspaceState(appState)
+  }, [appState])
+
+  useEffect(() => {
     const intervalId = window.setInterval(() => {
       void refreshProjects().catch((caught) => {
         showToast('error', toMessage(caught))
@@ -111,6 +137,16 @@ function App() {
     setView('workspace')
   }
 
+  const openHistoryTask = (task: AgentTask) => {
+    setAppState((current) => ({
+      ...current,
+      activeProjectId: task.projectId,
+      currentWorkspaceTaskId: task.id,
+      traceDrawerOpen: false,
+    }))
+    setView('workspace')
+  }
+
   const handleSettingsChanged = (settings: AppState['settings']) => {
     if (!settings) {
       return
@@ -126,12 +162,32 @@ function App() {
   return (
     <div className={`app-root ${visualStyle === 'codex' ? 'codex-style' : 'classic-style'}`}>
       <div className="app-shell">
-        <Sidebar view={view} onNavigate={navigate} />
+        <Sidebar
+          view={view}
+          projects={appState.projects}
+          activeProjectId={appState.activeProjectId}
+          currentTaskId={appState.currentWorkspaceTaskId}
+          historyDays={historyDays}
+          tasksById={appState.tasksById}
+          taskIdsByProjectId={appState.taskIdsByProjectId}
+          onNavigate={navigate}
+          onOpenProject={openWorkspace}
+          onOpenHistoryTask={openHistoryTask}
+          onNewChat={(projectId) => {
+            setAppState((current) => ({
+              ...current,
+              activeProjectId: projectId,
+              currentWorkspaceTaskId: null,
+              traceDrawerOpen: false,
+            }))
+            setView('workspace')
+          }}
+        />
 
         <main className="main-panel">
           <Toast toast={toast} onDismiss={() => setToast(null)} />
 
-          <div className="main-scroll">
+          <div className={view === 'workspace' ? 'main-scroll workspace-scroll' : 'main-scroll'}>
             {view === 'projects' ? (
               <ProjectList
                 projects={appState.projects}
@@ -151,6 +207,10 @@ function App() {
                 onGlobalNotice={(message) => showToast('notice', message)}
                 onGlobalError={(message) => showToast('error', message)}
               />
+            ) : null}
+
+            {view === 'profile' ? (
+              <Profile tasks={Object.values(appState.tasksById)} />
             ) : null}
 
             {view === 'settings' ? (

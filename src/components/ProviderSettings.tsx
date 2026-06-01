@@ -46,6 +46,7 @@ function ProviderSettings({ providers, onSaveProvider }: ProviderSettingsProps) 
     const enabledModel = normalizedModels.find((model) => model.enabled)
     await onSaveProvider({
       ...draft,
+      enabled: draft.enabled || Boolean(enabledModel),
       baseUrl: isMiniMax(draft) ? minimaxOpenAiBaseUrl : draft.baseUrl,
       baseUrlLocked: isMiniMax(draft) ? true : draft.baseUrlLocked,
       defaultModel: enabledModel?.id ?? draft.defaultModel,

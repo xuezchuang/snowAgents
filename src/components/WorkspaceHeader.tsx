@@ -1,17 +1,13 @@
-import { MonitorUp, MoreHorizontal, PanelRightOpen } from 'lucide-react'
+import { MonitorUp, MoreHorizontal } from 'lucide-react'
 import { useState } from 'react'
 import type { ProjectSession } from '../types/project'
-import type { ToolTraceEvent } from '../types/trace'
 import { normalizeDisplayPath } from '../utils/path'
 import { vsStatus, vsStatusClass } from '../utils/projectStatus'
 
 interface WorkspaceHeaderProps {
   project: ProjectSession
-  traceEvents: ToolTraceEvent[]
-  traceDrawerOpen: boolean
-  showTraceButton: boolean
   busy: boolean
-  onToggleTrace: () => void
+  divided: boolean
   onOpenVisualStudio: () => void
   onRefreshBridge: () => void
   onClearWorkspace: () => void
@@ -20,11 +16,8 @@ interface WorkspaceHeaderProps {
 
 function WorkspaceHeader({
   project,
-  traceEvents,
-  traceDrawerOpen,
-  showTraceButton,
   busy,
-  onToggleTrace,
+  divided,
   onOpenVisualStudio,
   onRefreshBridge,
   onClearWorkspace,
@@ -32,7 +25,6 @@ function WorkspaceHeader({
 }: WorkspaceHeaderProps) {
   const [moreOpen, setMoreOpen] = useState(false)
   const [projectInfoOpen, setProjectInfoOpen] = useState(false)
-  const failedTrace = traceEvents.some((event) => event.status === 'failed')
   const statusClass = vsStatusClass(project)
   const statusLabel = vsStatus(project)
 
@@ -44,7 +36,7 @@ function WorkspaceHeader({
   }
 
   return (
-    <header className="workspace-header">
+    <header className={divided ? 'workspace-header divided' : 'workspace-header'}>
       <div className="workspace-topbar">
         <div className="workspace-identity" title={project.name}>
           <span className="workspace-project-name">{project.name}</span>
@@ -66,25 +58,6 @@ function WorkspaceHeader({
           >
             <MonitorUp size={16} aria-hidden="true" />
           </button>
-          {showTraceButton ? (
-            <button
-              type="button"
-              className={
-                failedTrace ?
-                  'icon-button topbar-icon-button trace-icon-button error'
-                : 'icon-button topbar-icon-button trace-icon-button'
-              }
-              onClick={onToggleTrace}
-              aria-pressed={traceDrawerOpen}
-              title="Toggle Trace"
-              aria-label="Toggle Trace"
-            >
-              <PanelRightOpen size={16} aria-hidden="true" />
-              {traceEvents.length > 0 ? (
-                <span className="trace-count-badge">{traceEvents.length}</span>
-              ) : null}
-            </button>
-          ) : null}
           <div className="workspace-more-wrap">
             <button
               type="button"

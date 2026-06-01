@@ -13,6 +13,7 @@ export interface ChatMessage {
   role: ChatRole
   content: string
   codeLinks?: CodeLinkRef[]
+  traceEvents?: ToolTraceEvent[]
   createdAt: string
 }
 
