@@ -4,6 +4,21 @@ SnowAgent Desktop is a Windows Tauri desktop MVP for C++ / Unreal / Visual Studi
 
 This is a native Tauri app. It is not Electron and it is not intended to run as a pure web app.
 
+## Product Direction
+
+SnowAgent Desktop is the foundation for SnowAgents: a local C++ / Visual Studio coding agent with VSIX semantic integration, workspace cache, build-error repair loop, and traceable tool execution.
+
+The project should not become a generic chat wrapper. The long-term value is giving an LLM high-quality C++ / Visual Studio context:
+
+- Current solution, project, active document, and selection.
+- Symbol definitions and references.
+- Caller/callee and override information.
+- Project-to-file ownership.
+- Active build configuration.
+- Compiler error context.
+- Clickable code links back into Visual Studio.
+- Tool execution trace and token usage.
+
 ## Features
 
 - Project registry with `repoRoot`, `solutionPath`, optional `uprojectPath`, and optional build command.
@@ -14,6 +29,37 @@ This is a native Tauri app. It is not Electron and it is not intended to run as 
 - Project Detail / Task page with mock agent trace output.
 - Expandable TracePanel input/output JSON, status, duration, and clickable code links.
 - CodeLink resolution for relative and absolute Windows paths.
+
+## Target Architecture
+
+```text
+SnowAgent Desktop / Agent Host
+├─ project session registry
+├─ model provider abstraction
+├─ tool registry
+├─ context builder
+├─ patch manager
+├─ build runner
+├─ trace store
+└─ UI
+
+Visual Studio VSIX Bridge
+├─ solution state service
+├─ active document / selection service
+├─ project-file mapping
+├─ semantic query service
+├─ error list service
+├─ in-memory workspace cache
+└─ optional SQLite workspace cache
+
+Tool Layer
+├─ file tools
+├─ git tools
+├─ build tools
+├─ Visual Studio semantic tools
+├─ clangd fallback tools
+└─ trace tools
+```
 
 ## Required Environment
 
@@ -186,6 +232,34 @@ Example body:
 }
 ```
 
+## Planned Semantic VSIX Tools
+
+The current bridge opens files. The next stage is to expose semantic C++ project tools from Visual Studio:
+
+```text
+vs.current_solution
+vs.current_document
+vs.current_selection
+vs.list_projects
+vs.list_project_files
+vs.find_definition
+vs.find_references
+vs.get_error_list
+```
+
+Later tools may include:
+
+```text
+vs.find_callers
+vs.find_callees
+vs.find_overrides
+vs.find_derived_classes
+vs.get_build_configuration
+vs.prepare_context
+```
+
+The VSIX should remain a semantic bridge. Model orchestration, task planning, patching, trace storage, token accounting, and provider configuration belong in the Desktop / Agent Host side.
+
 ## CodeLink Formats
 
 Supported examples:
@@ -216,6 +290,20 @@ settings.json
 
 Runtime VS bridge bindings such as `vsProcessId` and `vsBridgeEndpoint` are cleared on Desktop startup so stale ports are not reused.
 
+Future semantic workspace cache should be rebuildable and stored separately, for example:
+
+```text
+%LOCALAPPDATA%\SnowAgents\Workspaces\<workspace_hash>\index.db
+```
+
+Optional project-local cache may live under:
+
+```text
+<ProjectRoot>\.vs\SnowAgents\index.db
+```
+
+Do not store API keys, chat history, patch history, or important user data inside `.vs`.
+
 ## Manual Verification
 
 1. Start the desktop app with `npm run tauri dev`.
@@ -226,6 +314,86 @@ Runtime VS bridge bindings such as `vsProcessId` and `vsBridgeEndpoint` are clea
 6. Expand trace rows and inspect input/output JSON.
 7. Click the generated code link, for example `Source/RPGMetanoiaCpp/Private/RPGMetanoiaCpp.cpp:10`.
 8. Confirm Visual Studio opens the file and moves to the requested line.
+
+## Roadmap / TODO
+
+### Milestone 1: Stabilize Current MVP
+
+- [ ] Keep project registry stable.
+- [ ] Keep VSIX registration and heartbeat stable.
+- [ ] Keep `POST /openFile` reliable.
+- [ ] Keep CodeLink resolution reliable for relative and absolute Windows paths.
+- [ ] Keep mock trace UI usable.
+
+### Milestone 2: Agent Host Foundation
+
+- [ ] Add model provider abstraction.
+- [ ] Add OpenAI-compatible provider.
+- [ ] Add basic tool registry.
+- [ ] Add `file.read`.
+- [ ] Add `file.search`.
+- [ ] Add `file.apply_patch`.
+- [ ] Add `git.diff`.
+- [ ] Add trace data model.
+- [ ] Save trace as JSON.
+
+### Milestone 3: Build Integration
+
+- [ ] Add MSBuild discovery.
+- [ ] Add `build.solution`.
+- [ ] Add `build.project`.
+- [ ] Capture build stdout/stderr.
+- [ ] Parse MSVC errors.
+- [ ] Map errors to file/line/column.
+- [ ] Add `context.for_error`.
+
+### Milestone 4: VS Semantic Bridge
+
+- [ ] Add `vs.current_solution`.
+- [ ] Add `vs.current_document`.
+- [ ] Add `vs.current_selection`.
+- [ ] Add `vs.list_projects`.
+- [ ] Add `vs.list_project_files`.
+- [ ] Add `vs.find_definition`.
+- [ ] Add `vs.find_references`.
+- [ ] Add `vs.get_error_list`.
+- [ ] Add result ranking and truncation.
+- [ ] Filter generated/intermediate/third-party paths.
+- [ ] Add compact code previews.
+
+### Milestone 5: Workspace Cache
+
+- [ ] Add SQLite workspace cache.
+- [ ] Add Workspace table.
+- [ ] Add Project table.
+- [ ] Add File table.
+- [ ] Add QueryCache table.
+- [ ] Load cache when solution opens.
+- [ ] Build in-memory cache from SQLite.
+- [ ] Check file mtime/hash.
+- [ ] Invalidate stale query cache.
+- [ ] Save semantic query results back to cache.
+
+### Milestone 6: Patch and Build Loop
+
+- [ ] Let agent apply patch.
+- [ ] Run build after patch.
+- [ ] Parse errors.
+- [ ] Ask model for fix.
+- [ ] Apply smaller patch.
+- [ ] Build again.
+- [ ] Record full trace.
+- [ ] Show final diff.
+
+### Milestone 7: C++ / Unreal Enhancements
+
+- [ ] Add clangd fallback.
+- [ ] Add compile_commands support.
+- [ ] Add UE module detection.
+- [ ] Add `.Build.cs` / `.Target.cs` parsing.
+- [ ] Add UCLASS/UFUNCTION/UPROPERTY search.
+- [ ] Add generated code filtering.
+- [ ] Add Unreal-specific context builder.
 
 ## Repository Hygiene
 
