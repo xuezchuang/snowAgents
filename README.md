@@ -1,12 +1,12 @@
-# SnowAgent Desktop
+# CodeForge
 
-SnowAgent Desktop is a Windows Tauri desktop MVP for C++ / Unreal / Visual Studio workflows. It keeps project sessions in local JSON, binds a project to a running Visual Studio instance through a small VSIX bridge, and renders mock agent traces with clickable code links.
+CodeForge is a Windows Tauri desktop MVP for C++ / Unreal / Visual Studio workflows. It keeps project sessions in local JSON, binds a project to a running Visual Studio instance through a small VSIX bridge, and renders agent traces with clickable code links.
 
 This is a native Tauri app. It is not Electron and it is not intended to run as a pure web app.
 
 ## Product Direction
 
-SnowAgent Desktop is the foundation for SnowAgents: a local C++ / Visual Studio coding agent with VSIX semantic integration, workspace cache, build-error repair loop, and traceable tool execution.
+CodeForge is a local C++ / Visual Studio coding agent with VSIX semantic integration, workspace cache, build-error repair loop, and traceable tool execution.
 
 The project should not become a generic chat wrapper. The long-term value is giving an LLM high-quality C++ / Visual Studio context:
 
@@ -24,7 +24,7 @@ The project should not become a generic chat wrapper. The long-term value is giv
 - Project registry with `repoRoot`, `solutionPath`, optional `uprojectPath`, and optional build command.
 - Normal Windows display paths in the UI, while the backend can still use canonical paths internally.
 - Local Desktop HTTP bridge on `http://127.0.0.1:39000` for VSIX registration.
-- `SnowAgent.VSBridge` VSIX for Visual Studio 2026.
+- Visual Studio VSIX bridge for Visual Studio 2026.
 - VS Bridge registration, heartbeat, and `POST /openFile`.
 - Project Detail / Task page with mock agent trace output.
 - Expandable TracePanel input/output JSON, status, duration, and clickable code links.
@@ -33,7 +33,7 @@ The project should not become a generic chat wrapper. The long-term value is giv
 ## Target Architecture
 
 ```text
-SnowAgent Desktop / Agent Host
+CodeForge Desktop / Agent Host
 ├─ project session registry
 ├─ model provider abstraction
 ├─ tool registry
@@ -89,16 +89,6 @@ npx tauri --version
 cl.exe
 ```
 
-If Rust is missing, install it with:
-
-```powershell
-winget install Rustlang.Rustup
-```
-
-After installing Rust, open a new terminal or make sure `%USERPROFILE%\.cargo\bin` is on `PATH`.
-
-If `cl.exe` is missing, install Visual Studio 2026 or Visual Studio Build Tools with the C++ desktop workload. Tauri on Windows needs the MSVC Rust target and MSVC linker; do not use a GNU-only Rust toolchain for this project.
-
 ## Install Dependencies
 
 ```powershell
@@ -141,26 +131,20 @@ Rust tests:
 cargo test --manifest-path src-tauri\Cargo.toml
 ```
 
-If `cargo` is not on `PATH` in the current terminal:
-
-```powershell
-& "$env:USERPROFILE\.cargo\bin\cargo.exe" test --manifest-path src-tauri\Cargo.toml
-```
-
 ## VSIX Bridge
 
-The VSIX project is under:
+The current VSIX project still uses the legacy path:
 
 ```text
 vsix\SnowAgent.VSBridge
 ```
 
-Build it with MSBuild:
+This can be renamed in a later code-structure cleanup. For now, the product name is CodeForge while the existing VSIX project path remains unchanged to avoid breaking the current build.
+
+Build the VSIX with MSBuild:
 
 ```powershell
-& "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" `
-  vsix\SnowAgent.VSBridge\SnowAgent.VSBridge.csproj `
-  /restore /p:Configuration=Debug /v:m
+MSBuild.exe vsix\SnowAgent.VSBridge\SnowAgent.VSBridge.csproj /restore /p:Configuration=Debug /v:m
 ```
 
 The debug VSIX is generated at:
@@ -169,31 +153,9 @@ The debug VSIX is generated at:
 vsix\SnowAgent.VSBridge\bin\Debug\net472\SnowAgent.VSBridge.vsix
 ```
 
-Install it to the normal Visual Studio 2026 instance with:
-
-```powershell
-& "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\VSIXInstaller.exe" `
-  /quiet /force /instanceIds:<instanceId> `
-  vsix\SnowAgent.VSBridge\bin\Debug\net472\SnowAgent.VSBridge.vsix
-```
-
-Refresh Visual Studio configuration after installing:
-
-```powershell
-& "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\devenv.exe" /updateconfiguration
-```
-
-To find the Visual Studio instance id:
-
-```powershell
-& "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -all -format json
-```
-
-On this workstation the Visual Studio 2026 Community instance has used the suffix `18.0_c13aba33`, so the VSIXInstaller instance id is `c13aba33`.
-
 ## Bridge Protocol
 
-SnowAgent Desktop listens locally on:
+CodeForge listens locally on:
 
 ```text
 http://127.0.0.1:39000
@@ -205,31 +167,10 @@ The VSIX registers a Visual Studio instance with:
 POST /register_vs_instance
 ```
 
-Example body:
-
-```json
-{
-  "instanceId": "vs-12345",
-  "processId": 12345,
-  "solutionPath": "D:/Work/Game/Game.sln",
-  "endpoint": "http://127.0.0.1:39001"
-}
-```
-
 The VSIX exposes:
 
 ```http
 POST /openFile
-```
-
-Example body:
-
-```json
-{
-  "path": "D:/Work/Game/Source/Game/Foo.cpp",
-  "line": 128,
-  "column": 5
-}
 ```
 
 ## Planned Semantic VSIX Tools
@@ -278,7 +219,7 @@ Relative paths are resolved against the current `ProjectSession.repoRoot`. If th
 Runtime data is stored under:
 
 ```text
-%LOCALAPPDATA%\SnowAgentDesktop
+%LOCALAPPDATA%\CodeForge
 ```
 
 Files currently include:
@@ -288,21 +229,19 @@ projects.json
 settings.json
 ```
 
-Runtime VS bridge bindings such as `vsProcessId` and `vsBridgeEndpoint` are cleared on Desktop startup so stale ports are not reused.
-
 Future semantic workspace cache should be rebuildable and stored separately, for example:
 
 ```text
-%LOCALAPPDATA%\SnowAgents\Workspaces\<workspace_hash>\index.db
+%LOCALAPPDATA%\CodeForge\Workspaces\<workspace_hash>\index.db
 ```
 
 Optional project-local cache may live under:
 
 ```text
-<ProjectRoot>\.vs\SnowAgents\index.db
+<ProjectRoot>\.vs\CodeForge\index.db
 ```
 
-Do not store API keys, chat history, patch history, or important user data inside `.vs`.
+Do not store credentials, chat history, patch history, or important user data inside `.vs`.
 
 ## Manual Verification
 
@@ -312,7 +251,7 @@ Do not store API keys, chat history, patch history, or important user data insid
 4. Click `Open Task`.
 5. Run `Run Mock Agent`.
 6. Expand trace rows and inspect input/output JSON.
-7. Click the generated code link, for example `Source/RPGMetanoiaCpp/Private/RPGMetanoiaCpp.cpp:10`.
+7. Click a generated code link.
 8. Confirm Visual Studio opens the file and moves to the requested line.
 
 ## Roadmap / TODO
