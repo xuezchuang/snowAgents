@@ -19,10 +19,10 @@ interface ComposerProps {
   onChange: (value: string) => void
   onSend: (
     prompt: string,
-    selection: { providerId: string | null; modelId: string | null },
+    selection: { providerId: string | null; credentialId: string | null; modelId: string | null },
   ) => void
   onRunToolCallTest: (
-    selection: { providerId: string | null; modelId: string | null },
+    selection: { providerId: string | null; credentialId: string | null; modelId: string | null },
   ) => void
 }
 
@@ -43,6 +43,10 @@ function Composer({
     selectableModels.find((model) => model.id === selectedModelId) ??
     selectableModels[0] ??
     null
+  const selectedModelTriggerLabel =
+    selectedModel?.credentialName ?
+      `${selectedModel.credentialName} / ${selectedModel.modelName}`
+    : selectedModel?.modelName
   const canSend = value.trim().length > 0 && !busy && selectedModel !== null
   const canRunToolCallTest = !busy && selectedModel !== null
 
@@ -81,6 +85,7 @@ function Composer({
     }
     onSend(value.trim(), {
       providerId: selectedModel?.providerId ?? null,
+      credentialId: selectedModel?.credentialId ?? null,
       modelId: selectedModel?.modelId ?? null,
     })
     onChange('')
@@ -92,6 +97,7 @@ function Composer({
     }
     onRunToolCallTest({
       providerId: selectedModel?.providerId ?? null,
+      credentialId: selectedModel?.credentialId ?? null,
       modelId: selectedModel?.modelId ?? null,
     })
   }
@@ -157,7 +163,7 @@ function Composer({
                 disabled={selectableModels.length === 0}
                 title={selectedModel?.label ?? 'Enable a provider in Settings'}
               >
-                <span>{selectedModel?.modelId ?? 'No enabled model'}</span>
+                <span>{selectedModelTriggerLabel ?? 'No enabled model'}</span>
                 <ChevronDown size={14} aria-hidden="true" />
               </button>
               {modelMenuOpen ? (
@@ -178,7 +184,7 @@ function Composer({
                         setModelMenuOpen(false)
                       }}
                     >
-                      <span>{model.modelId}</span>
+                      <span>{model.label}</span>
                       {model.id === selectedModel?.id ? (
                         <Check size={15} aria-hidden="true" />
                       ) : null}

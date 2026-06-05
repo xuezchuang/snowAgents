@@ -1,16 +1,18 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::project_registry::ProjectSession;
-use crate::tool_registry::{self, CALCULATOR_ADD_TOOL_NAME};
+use crate::tool_registry::{self, ToolExecutionContext, CALCULATOR_ADD_TOOL_NAME};
 use crate::tool_trace::{self, MockAgentRun, ToolTraceEvent, TraceEventType, TraceStatus};
-use crate::vs_registry::{AppSettings, ProviderConfig};
+use crate::vs_registry::{AppSettings, ProviderConfig, ProviderCredential};
 
 pub const TOOL_CALL_TEST_PROMPT: &str = "请必须调用 calculator.add 工具计算 1+1，然后告诉我结果。";
+const DEFAULT_MAX_TOOL_ROUNDS: usize = 8;
+const MODEL_REQUEST_TIMEOUT_SECONDS: u64 = 120;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +21,7 @@ pub struct AgentRunInput {
     pub user_prompt: String,
     pub messages: Option<Vec<AgentConversationMessage>>,
     pub provider_id: Option<String>,
+    pub credential_id: Option<String>,
     pub model_id: Option<String>,
 }
 
@@ -32,7 +35,17 @@ pub struct AgentConversationMessage {
 #[derive(Clone)]
 struct SelectedModel {
     provider: ProviderConfig,
+    credential: Option<ProviderCredential>,
     model_id: String,
+}
+
+impl SelectedModel {
+    fn credential_api_key(&self) -> &str {
+        self.credential
+            .as_ref()
+            .map(|credential| credential.api_key.as_str())
+            .unwrap_or("")
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -66,6 +79,14 @@ struct ChatCompletionResult {
     duration_ms: u64,
     request_body: Value,
     response_body: Value,
+}
+
+#[derive(Debug, Default)]
+struct StreamingToolCall {
+    id: Option<String>,
+    call_type: Option<String>,
+    name: Option<String>,
+    arguments: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -152,136 +173,125 @@ pub async fn run_agent(
     project: &ProjectSession,
     settings: &AppSettings,
     input: AgentRunInput,
+    mut on_trace: impl FnMut(&ToolTraceEvent),
 ) -> Result<MockAgentRun, String> {
     let task_id = Uuid::new_v4().to_string();
     let conversation_messages =
         normalize_conversation_messages(input.messages.as_deref(), &input.user_prompt);
     let mut traces = Vec::new();
-    traces.push(trace(
-        &task_id,
-        1,
-        TraceEventType::SystemEvent,
-        None,
-        "Start task",
-        Some(json!({
-            "projectId": project.id,
-            "projectName": project.name,
-            "prompt": input.user_prompt,
-        })),
-        None,
-        Some("Task accepted".to_string()),
-        TraceStatus::Success,
-        0,
-    ));
+    push_trace(
+        &mut traces,
+        trace(
+            &task_id,
+            1,
+            TraceEventType::UserMessage,
+            None,
+            "user_message",
+            Some(json!({
+                "projectId": project.id,
+                "projectName": project.name,
+                "prompt": input.user_prompt,
+            })),
+            None,
+            Some(input.user_prompt.clone()),
+            TraceStatus::Success,
+            0,
+        ),
+        &mut on_trace,
+    );
 
     let selected = match select_model(
         settings,
         input.provider_id.as_deref(),
+        input.credential_id.as_deref(),
         input.model_id.as_deref(),
     ) {
         Ok(selected) => selected,
         Err(error) => {
-            traces.push(error_trace(
-                &task_id,
-                2,
-                "select_model failed",
-                Some(json!({
-                    "providerId": input.provider_id,
-                    "modelId": input.model_id,
-                })),
-                &error,
-            ));
+            push_trace(
+                &mut traces,
+                error_trace(
+                    &task_id,
+                    2,
+                    "select_model failed",
+                    Some(json!({
+                        "providerId": input.provider_id,
+                        "credentialId": input.credential_id,
+                        "modelId": input.model_id,
+                    })),
+                    &error,
+                ),
+                &mut on_trace,
+            );
             return Ok(MockAgentRun { task_id, traces });
         }
     };
 
-    traces.push(trace(
-        &task_id,
-        2,
-        TraceEventType::SystemEvent,
-        None,
-        "select_model",
-        Some(json!({
-            "providerId": selected.provider.id,
-            "modelId": selected.model_id,
-        })),
-        Some(json!({
-            "provider": selected.provider.name,
-            "type": selected.provider.provider_type,
-            "baseUrl": selected.provider.base_url,
-            "model": selected.model_id,
-        })),
-        Some(format!(
-            "{} / {}",
-            selected.provider.name, selected.model_id
-        )),
-        TraceStatus::Success,
-        0,
-    ));
+    push_trace(
+        &mut traces,
+        trace(
+            &task_id,
+            2,
+            TraceEventType::SystemEvent,
+            None,
+            "select_model",
+            Some(json!({
+                "providerId": selected.provider.id,
+                "credentialId": selected.credential.as_ref().map(|credential| credential.id.clone()),
+                "modelId": selected.model_id,
+            })),
+            Some(json!({
+                "provider": selected.provider.name,
+                "credential": selected
+                    .credential
+                    .as_ref()
+                    .map(|credential| credential.name.clone()),
+                "type": selected.provider.provider_type,
+                "baseUrl": selected.provider.base_url,
+                "model": selected.model_id,
+            })),
+            Some(format!(
+                "{} / {}",
+                selected.provider.name, selected.model_id
+            )),
+            TraceStatus::Success,
+            0,
+        ),
+        &mut on_trace,
+    );
 
-    match call_provider(project, &selected, &conversation_messages).await {
-        Ok(completion) => {
-            let message = completion.message;
-            let message_chars = message.chars().count();
-            traces.push(trace(
-                &task_id,
-                3,
-                TraceEventType::ToolResult,
-                Some("chat_completion"),
-                "chat_completion",
-                Some(json!({
-                    "provider": selected.provider.name,
-                    "type": selected.provider.provider_type,
-                    "baseUrl": selected.provider.base_url,
-                    "request": completion.request_body,
-                })),
-                Some(json!({
-                    "provider": selected.provider.name,
-                    "type": selected.provider.provider_type,
-                    "baseUrl": selected.provider.base_url,
-                    "response": completion.response_body,
-                    "message": message.clone(),
-                    "messageChars": message_chars,
-                    "model": selected.model_id,
-                    "inputTokens": completion.token_usage.input_tokens,
-                    "outputTokens": completion.token_usage.output_tokens,
-                    "totalTokens": completion.token_usage.total_tokens,
-                    "inputCachedTokens": completion.token_usage.input_cached_tokens,
-                    "inputUncachedTokens": completion.token_usage.input_uncached_tokens,
-                })),
-                Some(format!("Received {message_chars} chars")),
-                TraceStatus::Success,
-                completion.duration_ms,
-            ));
-            traces.push(trace(
-                &task_id,
-                4,
-                TraceEventType::ModelMessage,
-                None,
-                "model_message",
-                None,
-                Some(json!({ "message": message.clone() })),
-                Some(message),
-                TraceStatus::Success,
-                0,
-            ));
-        }
-        Err(error) => {
-            traces.push(error_trace(
-                &task_id,
-                3,
-                "chat_completion failed",
-                Some(json!({
-                    "provider": selected.provider.name,
-                    "type": selected.provider.provider_type,
-                    "baseUrl": selected.provider.base_url,
-                    "model": selected.model_id,
-                    "messages": &conversation_messages,
-                    "apiKey": mask_secret(&selected.provider.api_key),
-                })),
-                &error,
-            ));
-        }
+    let mut step_index = 3;
+    if supports_openai_tool_calls(&selected) {
+        let initial_messages = build_messages(project, &conversation_messages)
+            .into_iter()
+            .map(|message| json!(message))
+            .collect::<Vec<_>>();
+        let tool_context = ToolExecutionContext {
+            workspace_root: &project.repo_root,
+        };
+        run_openai_tool_agent_loop(
+            &task_id,
+            &selected,
+            &tool_context,
+            initial_messages,
+            &mut traces,
+            &mut step_index,
+            DEFAULT_MAX_TOOL_ROUNDS,
+            false,
+            &mut on_trace,
+        )
+        .await?;
+    } else {
+        record_plain_provider_completion(
+            project,
+            &selected,
+            &conversation_messages,
+            &task_id,
+            &mut traces,
+            step_index,
+            &mut on_trace,
+        )
+        .await;
     }
 
     Ok(MockAgentRun { task_id, traces })
@@ -291,6 +301,7 @@ pub async fn run_tool_call_test(
     project: &ProjectSession,
     settings: &AppSettings,
     provider_id: Option<&str>,
+    credential_id: Option<&str>,
     model_id: Option<&str>,
     mut on_trace: impl FnMut(&ToolTraceEvent),
 ) -> Result<MockAgentRun, String> {
@@ -320,7 +331,7 @@ pub async fn run_tool_call_test(
     );
     step_index += 1;
 
-    let selected = match select_model(settings, provider_id, model_id) {
+    let selected = match select_model(settings, provider_id, credential_id, model_id) {
         Ok(selected) => selected,
         Err(error) => {
             push_trace(
@@ -331,6 +342,7 @@ pub async fn run_tool_call_test(
                     "select_model failed",
                     Some(json!({
                         "providerId": provider_id,
+                        "credentialId": credential_id,
                         "modelId": model_id,
                     })),
                     &error,
@@ -365,275 +377,438 @@ pub async fn run_tool_call_test(
         return Ok(MockAgentRun { task_id, traces });
     }
 
-    let base_messages = build_tool_call_test_messages(project);
-    let first_request = build_chat_completion_request(
+    let initial_messages = build_tool_call_test_messages(project);
+    let tool_context = ToolExecutionContext {
+        workspace_root: &project.repo_root,
+    };
+    run_openai_tool_agent_loop(
+        &task_id,
         &selected,
-        base_messages.clone(),
-        Some(tool_registry::tool_definitions()),
-    );
-    push_trace(
+        &tool_context,
+        initial_messages,
         &mut traces,
-        trace(
-            &task_id,
-            step_index,
-            TraceEventType::LlmRequest,
-            None,
-            "llm_request:first",
-            Some(first_request.clone()),
-            None,
-            Some(request_summary(&first_request)),
-            TraceStatus::Success,
-            0,
-        ),
+        &mut step_index,
+        DEFAULT_MAX_TOOL_ROUNDS,
+        true,
         &mut on_trace,
-    );
-    step_index += 1;
+    )
+    .await?;
 
-    let first_completion = match send_chat_completion(&selected, &first_request).await {
-        Ok(completion) => completion,
-        Err(error) => {
-            push_trace(
-                &mut traces,
-                error_trace(
-                    &task_id,
-                    step_index,
-                    "llm_request:first failed",
-                    Some(first_request),
-                    &error,
-                ),
-                &mut on_trace,
-            );
-            return Ok(MockAgentRun { task_id, traces });
-        }
-    };
-    push_trace(
-        &mut traces,
-        trace(
-            &task_id,
-            step_index,
-            TraceEventType::LlmResponse,
-            None,
-            "llm_response:first",
-            Some(json!({
-                "request": first_completion.request_body.clone(),
-            })),
-            Some(first_completion.response_body.clone()),
-            Some(response_summary(&first_completion.response_body)),
-            TraceStatus::Success,
-            first_completion.duration_ms,
-        ),
-        &mut on_trace,
-    );
-    step_index += 1;
+    Ok(MockAgentRun { task_id, traces })
+}
 
-    let tool_calls = match parse_tool_calls(&first_completion.response_body) {
-        Ok(tool_calls) => tool_calls,
-        Err(error) => {
-            push_trace(
-                &mut traces,
-                error_trace(
-                    &task_id,
-                    step_index,
-                    "parse_tool_calls failed",
-                    Some(first_completion.response_body),
-                    &error,
-                ),
-                &mut on_trace,
-            );
-            return Ok(MockAgentRun { task_id, traces });
-        }
-    };
+async fn run_openai_tool_agent_loop(
+    task_id: &str,
+    selected: &SelectedModel,
+    tool_context: &ToolExecutionContext<'_>,
+    mut messages: Vec<Value>,
+    traces: &mut Vec<ToolTraceEvent>,
+    step_index: &mut u32,
+    max_tool_rounds: usize,
+    require_tool_call: bool,
+    on_trace: &mut impl FnMut(&ToolTraceEvent),
+) -> Result<(), String> {
+    let tools = tool_registry::tool_definitions();
 
-    if tool_calls.is_empty() {
-        let warning = "模型没有触发工具调用";
+    for round_index in 0..=max_tool_rounds {
+        let request =
+            build_chat_completion_request(selected, messages.clone(), Some(tools.clone()));
+        let request_title = format!("llm_request:{}", round_index + 1);
         push_trace(
-            &mut traces,
+            traces,
             trace(
-                &task_id,
-                step_index,
-                TraceEventType::FinalResponse,
+                task_id,
+                *step_index,
+                TraceEventType::LlmRequest,
                 None,
-                "model_did_not_call_tool",
-                Some(first_completion.response_body),
-                Some(json!({ "warning": "model_did_not_call_tool" })),
-                Some(warning.to_string()),
-                TraceStatus::Warning,
-                0,
-            ),
-            &mut on_trace,
-        );
-        return Ok(MockAgentRun { task_id, traces });
-    }
-
-    let mut second_messages = base_messages;
-    second_messages.push(build_assistant_tool_call_message(
-        &first_completion.response_body,
-    )?);
-
-    for tool_call in tool_calls {
-        let arguments = match parse_tool_arguments(&tool_call.function.arguments) {
-            Ok(arguments) => arguments,
-            Err(error) => {
-                push_trace(
-                    &mut traces,
-                    error_trace(
-                        &task_id,
-                        step_index,
-                        "tool_arguments parse failed",
-                        Some(json!({ "toolCall": tool_call.clone() })),
-                        &error,
-                    ),
-                    &mut on_trace,
-                );
-                return Ok(MockAgentRun { task_id, traces });
-            }
-        };
-
-        push_trace(
-            &mut traces,
-            trace(
-                &task_id,
-                step_index,
-                TraceEventType::ToolCall,
-                Some(&tool_call.function.name),
-                "tool_call",
-                Some(json!({ "toolCall": tool_call.clone(), "arguments": arguments.clone() })),
+                &request_title,
+                Some(request.clone()),
                 None,
-                Some(tool_call_summary(&tool_call.function.name, &arguments)),
+                Some(request_summary(&request)),
                 TraceStatus::Success,
                 0,
             ),
-            &mut on_trace,
+            on_trace,
         );
-        step_index += 1;
+        *step_index += 1;
 
-        let started = Instant::now();
-        let tool_result = match tool_registry::execute_tool(&tool_call.function.name, &arguments) {
-            Ok(result) => result,
+        let completion = match send_chat_completion(selected, &request).await {
+            Ok(completion) => completion,
             Err(error) => {
                 push_trace(
-                    &mut traces,
+                    traces,
                     error_trace(
-                        &task_id,
-                        step_index,
-                        "tool execution failed",
-                        Some(json!({
-                            "toolName": tool_call.function.name.clone(),
-                            "arguments": arguments.clone(),
-                        })),
+                        task_id,
+                        *step_index,
+                        &format!("{request_title} failed"),
+                        Some(request),
                         &error,
                     ),
-                    &mut on_trace,
+                    on_trace,
                 );
-                return Ok(MockAgentRun { task_id, traces });
+                *step_index += 1;
+                return Ok(());
             }
         };
+
+        let response_title = format!("llm_response:{}", round_index + 1);
         push_trace(
-            &mut traces,
+            traces,
             trace(
-                &task_id,
-                step_index,
-                TraceEventType::ToolResult,
-                Some(&tool_call.function.name),
-                "tool_result",
+                task_id,
+                *step_index,
+                TraceEventType::LlmResponse,
+                None,
+                &response_title,
                 Some(json!({
-                    "toolName": tool_call.function.name.clone(),
-                    "arguments": arguments.clone(),
+                    "request": completion.request_body.clone(),
                 })),
-                Some(tool_result.clone()),
-                Some(tool_result_summary(&tool_result)),
+                Some(completion.response_body.clone()),
+                Some(response_summary(&completion.response_body)),
                 TraceStatus::Success,
-                started.elapsed().as_millis() as u64,
+                completion.duration_ms,
             ),
-            &mut on_trace,
+            on_trace,
         );
-        step_index += 1;
+        *step_index += 1;
 
-        second_messages.push(build_tool_result_message(&tool_call, &tool_result));
+        let tool_calls = match parse_tool_calls(&completion.response_body) {
+            Ok(tool_calls) => tool_calls,
+            Err(error) => {
+                push_trace(
+                    traces,
+                    error_trace(
+                        task_id,
+                        *step_index,
+                        "parse_tool_calls failed",
+                        Some(completion.response_body),
+                        &error,
+                    ),
+                    on_trace,
+                );
+                *step_index += 1;
+                return Ok(());
+            }
+        };
+
+        if tool_calls.is_empty() {
+            push_final_response_trace(
+                task_id,
+                traces,
+                step_index,
+                &completion,
+                require_tool_call && round_index == 0,
+                on_trace,
+            );
+            return Ok(());
+        }
+
+        if round_index >= max_tool_rounds {
+            push_trace(
+                traces,
+                error_trace(
+                    task_id,
+                    *step_index,
+                    "max_tool_rounds exceeded",
+                    Some(json!({
+                        "maxToolRounds": max_tool_rounds,
+                        "response": completion.response_body,
+                    })),
+                    "max_tool_rounds exceeded before the model produced a final response",
+                ),
+                on_trace,
+            );
+            *step_index += 1;
+            return Ok(());
+        }
+
+        match build_assistant_tool_call_message(&completion.response_body) {
+            Ok(message) => messages.push(message),
+            Err(error) => {
+                push_trace(
+                    traces,
+                    error_trace(
+                        task_id,
+                        *step_index,
+                        "assistant_tool_call_message failed",
+                        Some(completion.response_body),
+                        &error,
+                    ),
+                    on_trace,
+                );
+                *step_index += 1;
+                return Ok(());
+            }
+        }
+
+        for tool_call in tool_calls {
+            let arguments = match parse_tool_arguments(&tool_call.function.arguments) {
+                Ok(arguments) => arguments,
+                Err(error) => {
+                    let tool_result = tool_error_result(&error);
+                    push_trace(
+                        traces,
+                        trace(
+                            task_id,
+                            *step_index,
+                            TraceEventType::Error,
+                            Some(&tool_call.function.name),
+                            "tool_arguments parse failed",
+                            Some(json!({ "toolCall": tool_call.clone() })),
+                            Some(tool_result.clone()),
+                            Some(error),
+                            TraceStatus::Failed,
+                            0,
+                        ),
+                        on_trace,
+                    );
+                    *step_index += 1;
+                    messages.push(build_tool_result_message(&tool_call, &tool_result));
+                    continue;
+                }
+            };
+
+            push_trace(
+                traces,
+                trace(
+                    task_id,
+                    *step_index,
+                    TraceEventType::ToolCall,
+                    Some(&tool_call.function.name),
+                    "tool_call",
+                    Some(json!({ "toolCall": tool_call.clone(), "arguments": arguments.clone() })),
+                    None,
+                    Some(tool_call_summary(&tool_call.function.name, &arguments)),
+                    TraceStatus::Success,
+                    0,
+                ),
+                on_trace,
+            );
+            *step_index += 1;
+
+            let started = Instant::now();
+            let tool_result = match tool_registry::execute_tool(
+                tool_context,
+                &tool_call.function.name,
+                &arguments,
+            ) {
+                Ok(result) => result,
+                Err(error) => {
+                    let tool_result = tool_error_result(&error);
+                    push_trace(
+                        traces,
+                        trace(
+                            task_id,
+                            *step_index,
+                            TraceEventType::Error,
+                            Some(&tool_call.function.name),
+                            "tool execution failed",
+                            Some(json!({
+                                "toolName": tool_call.function.name.clone(),
+                                "arguments": arguments.clone(),
+                            })),
+                            Some(tool_result.clone()),
+                            Some(error),
+                            TraceStatus::Failed,
+                            started.elapsed().as_millis() as u64,
+                        ),
+                        on_trace,
+                    );
+                    *step_index += 1;
+                    messages.push(build_tool_result_message(&tool_call, &tool_result));
+                    continue;
+                }
+            };
+
+            push_trace(
+                traces,
+                trace(
+                    task_id,
+                    *step_index,
+                    TraceEventType::ToolResult,
+                    Some(&tool_call.function.name),
+                    "tool_result",
+                    Some(json!({
+                        "toolName": tool_call.function.name.clone(),
+                        "arguments": arguments.clone(),
+                    })),
+                    Some(tool_result.clone()),
+                    Some(tool_result_summary(&tool_result)),
+                    TraceStatus::Success,
+                    started.elapsed().as_millis() as u64,
+                ),
+                on_trace,
+            );
+            *step_index += 1;
+
+            messages.push(build_tool_result_message(&tool_call, &tool_result));
+        }
     }
 
-    let second_request = build_chat_completion_request(
-        &selected,
-        second_messages,
-        Some(tool_registry::tool_definitions()),
-    );
-    push_trace(
-        &mut traces,
-        trace(
-            &task_id,
-            step_index,
-            TraceEventType::LlmRequest,
-            None,
-            "llm_request:second",
-            Some(second_request.clone()),
-            None,
-            Some(request_summary(&second_request)),
-            TraceStatus::Success,
-            0,
-        ),
-        &mut on_trace,
-    );
-    step_index += 1;
+    Ok(())
+}
 
-    let final_completion = match send_chat_completion(&selected, &second_request).await {
-        Ok(completion) => completion,
-        Err(error) => {
-            push_trace(
-                &mut traces,
-                error_trace(
-                    &task_id,
-                    step_index,
-                    "llm_request:second failed",
-                    Some(second_request),
-                    &error,
-                ),
-                &mut on_trace,
-            );
-            return Ok(MockAgentRun { task_id, traces });
-        }
-    };
-    let final_message = extract_message_from_response(&final_completion.response_body)
+fn push_final_response_trace(
+    task_id: &str,
+    traces: &mut Vec<ToolTraceEvent>,
+    step_index: &mut u32,
+    completion: &ChatCompletionResult,
+    warn_if_no_tool_call: bool,
+    on_trace: &mut impl FnMut(&ToolTraceEvent),
+) {
+    let final_message = extract_message_from_response(&completion.response_body)
         .unwrap_or_default()
         .trim()
         .to_string();
-    let final_summary = if final_message.is_empty() {
+    let final_summary = if warn_if_no_tool_call {
+        "model_did_not_call_tool".to_string()
+    } else if final_message.is_empty() {
         "Final response was empty".to_string()
     } else {
         final_message.clone()
     };
+    let title = if warn_if_no_tool_call {
+        "model_did_not_call_tool"
+    } else {
+        "final_response"
+    };
+    let status = if warn_if_no_tool_call || final_message.is_empty() {
+        TraceStatus::Warning
+    } else {
+        TraceStatus::Success
+    };
 
     push_trace(
-        &mut traces,
+        traces,
         trace(
-            &task_id,
-            step_index,
+            task_id,
+            *step_index,
             TraceEventType::FinalResponse,
             None,
-            "final_response",
+            title,
             Some(json!({
-                "request": final_completion.request_body.clone(),
+                "request": completion.request_body.clone(),
             })),
             Some(json!({
-                "response": final_completion.response_body.clone(),
-                "message": final_message.clone(),
+                "response": completion.response_body.clone(),
+                "message": final_message,
+                "warning": if warn_if_no_tool_call {
+                    Some("model_did_not_call_tool")
+                } else {
+                    None
+                },
             })),
             Some(final_summary),
-            if final_message.is_empty() {
-                TraceStatus::Warning
-            } else {
-                TraceStatus::Success
-            },
-            final_completion.duration_ms,
+            status,
+            completion.duration_ms,
         ),
-        &mut on_trace,
+        on_trace,
     );
+    *step_index += 1;
+}
 
-    Ok(MockAgentRun { task_id, traces })
+async fn record_plain_provider_completion(
+    project: &ProjectSession,
+    selected: &SelectedModel,
+    conversation_messages: &[ChatMessage],
+    task_id: &str,
+    traces: &mut Vec<ToolTraceEvent>,
+    step_index: u32,
+    on_trace: &mut impl FnMut(&ToolTraceEvent),
+) {
+    match call_provider(project, selected, conversation_messages).await {
+        Ok(completion) => {
+            let message = completion.message;
+            let message_chars = message.chars().count();
+            push_trace(
+                traces,
+                trace(
+                    task_id,
+                    step_index,
+                    TraceEventType::ToolResult,
+                    Some("chat_completion"),
+                    "chat_completion",
+                    Some(json!({
+                        "provider": selected.provider.name,
+                        "type": selected.provider.provider_type,
+                        "baseUrl": selected.provider.base_url,
+                        "request": completion.request_body,
+                    })),
+                    Some(json!({
+                        "provider": selected.provider.name,
+                        "type": selected.provider.provider_type,
+                        "baseUrl": selected.provider.base_url,
+                        "response": completion.response_body,
+                        "message": message.clone(),
+                        "messageChars": message_chars,
+                        "model": selected.model_id,
+                        "inputTokens": completion.token_usage.input_tokens,
+                        "outputTokens": completion.token_usage.output_tokens,
+                        "totalTokens": completion.token_usage.total_tokens,
+                        "inputCachedTokens": completion.token_usage.input_cached_tokens,
+                        "inputUncachedTokens": completion.token_usage.input_uncached_tokens,
+                    })),
+                    Some(format!("Received {message_chars} chars")),
+                    TraceStatus::Success,
+                    completion.duration_ms,
+                ),
+                on_trace,
+            );
+            push_trace(
+                traces,
+                trace(
+                    task_id,
+                    step_index + 1,
+                    TraceEventType::ModelMessage,
+                    None,
+                    "model_message",
+                    None,
+                    Some(json!({ "message": message.clone() })),
+                    Some(message),
+                    TraceStatus::Success,
+                    0,
+                ),
+                on_trace,
+            );
+        }
+        Err(error) => {
+            push_trace(
+                traces,
+                error_trace(
+                    task_id,
+                    step_index,
+                    "chat_completion failed",
+                    Some(json!({
+                        "provider": selected.provider.name,
+                        "credential": selected
+                            .credential
+                            .as_ref()
+                            .map(|credential| credential.name.clone()),
+                        "type": selected.provider.provider_type,
+                        "baseUrl": selected.provider.base_url,
+                        "model": selected.model_id,
+                        "messages": conversation_messages,
+                        "apiKey": mask_secret(selected.credential_api_key()),
+                    })),
+                    &error,
+                ),
+                on_trace,
+            );
+        }
+    }
+}
+
+fn supports_openai_tool_calls(selected: &SelectedModel) -> bool {
+    !matches!(
+        selected.provider.provider_type.as_str(),
+        "claude" | "ollama"
+    )
 }
 
 fn select_model(
     settings: &AppSettings,
     provider_id: Option<&str>,
+    credential_id: Option<&str>,
     model_id: Option<&str>,
 ) -> Result<SelectedModel, String> {
     let provider = if let Some(provider_id) = provider_id.filter(|value| !value.trim().is_empty()) {
@@ -646,17 +821,10 @@ fn select_model(
         if is_provider_usable(requested_provider) {
             requested_provider.clone()
         } else {
-            settings
-                .providers
-                .iter()
-                .find(|provider| is_provider_usable(provider))
-                .cloned()
-                .ok_or_else(|| {
-                    format!(
-                        "Provider is disabled: {}. Enable a provider or model in Settings first.",
-                        requested_provider.name
-                    )
-                })?
+            return Err(format!(
+                "Provider is disabled: {}. Enable the provider, one model, and one credential in Settings first.",
+                requested_provider.name
+            ));
         }
     } else {
         settings
@@ -668,6 +836,8 @@ fn select_model(
                 "No enabled provider. Enable a provider or model in Settings first.".to_string()
             })?
     };
+
+    let credential = select_credential(&provider, credential_id)?;
 
     let model_id = model_id
         .filter(|value| {
@@ -692,11 +862,63 @@ fn select_model(
         return Err(format!("Model is empty for provider {}", provider.name));
     }
 
-    Ok(SelectedModel { provider, model_id })
+    Ok(SelectedModel {
+        provider,
+        credential,
+        model_id,
+    })
 }
 
 fn is_provider_usable(provider: &ProviderConfig) -> bool {
-    provider.enabled || provider.models.iter().any(|model| model.enabled)
+    let model_enabled = provider.models.iter().any(|model| model.enabled);
+    if provider.provider_type == "ollama" {
+        return provider.enabled || model_enabled;
+    }
+    (provider.enabled
+        || model_enabled
+        || provider
+            .credentials
+            .iter()
+            .any(|credential| credential.enabled))
+        && provider.credentials.iter().any(|credential| credential.enabled)
+}
+
+fn select_credential(
+    provider: &ProviderConfig,
+    credential_id: Option<&str>,
+) -> Result<Option<ProviderCredential>, String> {
+    if provider.provider_type == "ollama" {
+        return Ok(None);
+    }
+
+    if let Some(credential_id) = credential_id.filter(|value| !value.trim().is_empty()) {
+        let credential = provider
+            .credentials
+            .iter()
+            .find(|credential| credential.id == credential_id)
+            .ok_or_else(|| {
+                format!(
+                    "Credential not found: {} for provider {}",
+                    credential_id, provider.name
+                )
+            })?;
+        if !credential.enabled {
+            return Err(format!(
+                "Credential is disabled: {} for provider {}",
+                credential.name, provider.name
+            ));
+        }
+        return Ok(Some(credential.clone()));
+    }
+
+    provider
+        .credentials
+        .iter()
+        .find(|credential| credential.id == provider.default_credential_id && credential.enabled)
+        .or_else(|| provider.credentials.iter().find(|credential| credential.enabled))
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| format!("No enabled credential for provider {}", provider.name))
 }
 
 async fn call_provider(
@@ -719,16 +941,21 @@ fn build_chat_completion_request(
     messages: Vec<Value>,
     tools: Option<Vec<Value>>,
 ) -> Value {
+    let uses_streaming = is_codebuddy_provider(selected);
     let mut request_body = json!({
         "model": selected.model_id,
         "messages": messages,
         "temperature": selected.provider.temperature,
-        "stream": false,
+        "stream": uses_streaming,
     });
 
     if let Some(tools) = tools {
         request_body["tools"] = json!(tools);
         request_body["tool_choice"] = json!("auto");
+    }
+
+    if uses_streaming {
+        request_body["stream_options"] = json!({ "include_usage": true });
     }
 
     request_body
@@ -745,24 +972,32 @@ async fn send_chat_completion(
             selected.provider.name
         ));
     }
-    if selected.provider.api_key.trim().is_empty() {
+    if selected.credential_api_key().trim().is_empty() {
         return Err(format!(
-            "API key is empty for provider {}",
-            selected.provider.name
+            "API key is empty for provider {} credential {}",
+            selected.provider.name,
+            selected
+                .credential
+                .as_ref()
+                .map(|credential| credential.name.as_str())
+                .unwrap_or("default")
         ));
     }
 
     let url = format!("{base_url}/chat/completions");
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    let auth = format!("Bearer {}", selected.provider.api_key.trim());
+    let auth = format!("Bearer {}", selected.credential_api_key().trim());
     headers.insert(
         AUTHORIZATION,
         HeaderValue::from_str(&auth).map_err(|error| format!("Invalid API key header: {error}"))?,
     );
+    if is_codebuddy_provider(selected) {
+        add_codebuddy_vscode_headers(&mut headers);
+    }
 
     let started = Instant::now();
-    let response = reqwest::Client::new()
+    let response = model_http_client()?
         .post(&url)
         .headers(headers)
         .json(request_body)
@@ -781,14 +1016,185 @@ async fn send_chat_completion(
         ));
     }
 
-    let response_body = serde_json::from_str::<Value>(&body)
-        .map_err(|error| format!("Model response parse failed: {error}; body={}", body))?;
+    let response_body = if is_codebuddy_provider(selected) {
+        parse_streaming_chat_completion(&body)?
+    } else {
+        serde_json::from_str::<Value>(&body)
+            .map_err(|error| format!("Model response parse failed: {error}; body={}", body))?
+    };
 
     Ok(ChatCompletionResult {
         duration_ms,
         request_body: request_body.clone(),
         response_body,
     })
+}
+
+fn is_codebuddy_provider(selected: &SelectedModel) -> bool {
+    selected.provider.id == "codebuddy" || selected.provider.provider_type == "codebuddy"
+}
+
+fn add_codebuddy_vscode_headers(headers: &mut HeaderMap) {
+    headers.insert(
+        HeaderName::from_static("x-agent-intent"),
+        HeaderValue::from_static("craft"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-ide-type"),
+        HeaderValue::from_static("VSCode"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-ide-name"),
+        HeaderValue::from_static("VSCode"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-ide-version"),
+        HeaderValue::from_static("0.0.0"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-product"),
+        HeaderValue::from_static("CodeBuddy"),
+    );
+    headers.insert(USER_AGENT, HeaderValue::from_static("CodeBuddyIDE/0.0.0"));
+}
+
+fn parse_streaming_chat_completion(body: &str) -> Result<Value, String> {
+    let mut saw_data = false;
+    let mut role = "assistant".to_string();
+    let mut content = String::new();
+    let mut finish_reason: Option<String> = None;
+    let mut usage: Option<Value> = None;
+    let mut tool_calls = Vec::<StreamingToolCall>::new();
+
+    for line in body.lines() {
+        let line = line.trim();
+        if !line.starts_with("data:") {
+            continue;
+        }
+        let data = line.trim_start_matches("data:").trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+
+        saw_data = true;
+        let chunk = serde_json::from_str::<Value>(data)
+            .map_err(|error| format!("Streaming chunk parse failed: {error}; chunk={data}"))?;
+        if chunk.get("usage").is_some_and(|value| !value.is_null()) {
+            usage = chunk.get("usage").cloned();
+        }
+
+        let Some(choices) = chunk.get("choices").and_then(Value::as_array) else {
+            continue;
+        };
+        for choice in choices {
+            if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+                finish_reason = Some(reason.to_string());
+            }
+            let Some(delta) = choice.get("delta").and_then(Value::as_object) else {
+                continue;
+            };
+            if let Some(delta_role) = delta.get("role").and_then(Value::as_str) {
+                role = delta_role.to_string();
+            }
+            if let Some(delta_content) = delta.get("content").and_then(Value::as_str) {
+                content.push_str(delta_content);
+            }
+            if let Some(delta_tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                for delta_tool_call in delta_tool_calls {
+                    merge_streaming_tool_call(&mut tool_calls, delta_tool_call);
+                }
+            }
+        }
+    }
+
+    if !saw_data {
+        return Err(format!("Streaming response had no data chunks. body={body}"));
+    }
+
+    let tool_calls = streaming_tool_calls_json(&tool_calls);
+    let message = if tool_calls.is_empty() {
+        json!({
+            "role": role,
+            "content": content,
+        })
+    } else {
+        json!({
+            "role": role,
+            "content": if content.is_empty() { Value::Null } else { Value::String(content) },
+            "tool_calls": tool_calls,
+        })
+    };
+
+    let mut response_body = json!({
+        "choices": [{
+            "message": message,
+            "finish_reason": finish_reason.unwrap_or_else(|| "stop".to_string()),
+        }],
+    });
+    if let Some(usage) = usage {
+        response_body["usage"] = usage;
+    }
+    Ok(response_body)
+}
+
+fn merge_streaming_tool_call(tool_calls: &mut Vec<StreamingToolCall>, delta_tool_call: &Value) {
+    let index = delta_tool_call
+        .get("index")
+        .and_then(Value::as_u64)
+        .unwrap_or(tool_calls.len() as u64) as usize;
+    while tool_calls.len() <= index {
+        tool_calls.push(StreamingToolCall::default());
+    }
+
+    let tool_call = &mut tool_calls[index];
+    if let Some(id) = delta_tool_call.get("id").and_then(Value::as_str) {
+        tool_call.id = Some(id.to_string());
+    }
+    if let Some(call_type) = delta_tool_call.get("type").and_then(Value::as_str) {
+        tool_call.call_type = Some(call_type.to_string());
+    }
+    let Some(function) = delta_tool_call.get("function").and_then(Value::as_object) else {
+        return;
+    };
+    if let Some(name) = function.get("name").and_then(Value::as_str) {
+        tool_call.name = Some(name.to_string());
+    }
+    if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
+        tool_call.arguments.push_str(arguments);
+    }
+}
+
+fn streaming_tool_calls_json(tool_calls: &[StreamingToolCall]) -> Vec<Value> {
+    tool_calls
+        .iter()
+        .enumerate()
+        .filter(|(_, tool_call)| {
+            tool_call.id.is_some() || tool_call.name.is_some() || !tool_call.arguments.is_empty()
+        })
+        .map(|(index, tool_call)| {
+            json!({
+                "id": tool_call
+                    .id
+                    .clone()
+                    .unwrap_or_else(|| format!("call_{}", index + 1)),
+                "type": tool_call
+                    .call_type
+                    .clone()
+                    .unwrap_or_else(|| "function".to_string()),
+                "function": {
+                    "name": tool_call.name.clone().unwrap_or_default(),
+                    "arguments": tool_call.arguments,
+                },
+            })
+        })
+        .collect()
+}
+
+fn model_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(MODEL_REQUEST_TIMEOUT_SECONDS))
+        .build()
+        .map_err(|error| format!("Model client build failed: {error}"))
 }
 
 async fn call_openai_compatible(
@@ -860,10 +1266,15 @@ async fn call_claude(
     } else {
         base_url
     };
-    if selected.provider.api_key.trim().is_empty() {
+    if selected.credential_api_key().trim().is_empty() {
         return Err(format!(
-            "API key is empty for provider {}",
-            selected.provider.name
+            "API key is empty for provider {} credential {}",
+            selected.provider.name,
+            selected
+                .credential
+                .as_ref()
+                .map(|credential| credential.name.as_str())
+                .unwrap_or("default")
         ));
     }
 
@@ -880,7 +1291,7 @@ async fn call_claude(
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(
         HeaderName::from_static("x-api-key"),
-        HeaderValue::from_str(selected.provider.api_key.trim())
+        HeaderValue::from_str(selected.credential_api_key().trim())
             .map_err(|error| format!("Invalid Claude API key header: {error}"))?,
     );
     headers.insert(
@@ -889,7 +1300,7 @@ async fn call_claude(
     );
 
     let started = Instant::now();
-    let response = reqwest::Client::new()
+    let response = model_http_client()?
         .post(&url)
         .headers(headers)
         .json(&request_body)
@@ -974,7 +1385,7 @@ async fn call_ollama(
     });
 
     let started = Instant::now();
-    let response = reqwest::Client::new()
+    let response = model_http_client()?
         .post(&url)
         .json(&request_body)
         .send()
@@ -1145,6 +1556,13 @@ fn build_tool_result_message(tool_call: &OpenAiToolCall, result: &Value) -> Valu
     })
 }
 
+fn tool_error_result(error: &str) -> Value {
+    json!({
+        "error": error,
+        "recoveryHint": "The tool failed. If a path was not found, use list_dir with path='.' or retry search_file/search_content with a valid workspace-relative root. If the requested file is outside the active workspace, explain that limitation."
+    })
+}
+
 fn parse_tool_arguments(arguments: &str) -> Result<Value, String> {
     serde_json::from_str::<Value>(arguments).map_err(|error| {
         format!("Tool arguments JSON parse failed: {error}; arguments={arguments}")
@@ -1290,4 +1708,407 @@ fn mask_secret(secret: &str) -> String {
         return "not_set".to_string();
     }
     "set".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::time::Duration;
+
+    use tiny_http::{Header, Request, Response, Server};
+
+    #[test]
+    fn chat_completion_request_enables_auto_tool_choice() {
+        let selected = test_selected_model("openai");
+        let request = build_chat_completion_request(
+            &selected,
+            vec![json!({ "role": "user", "content": "hello" })],
+            Some(tool_registry::tool_definitions()),
+        );
+
+        assert_eq!(request["tool_choice"], json!("auto"));
+        assert_eq!(array_len(&request, "tools"), 6);
+        assert_eq!(
+            request["tools"][0]["function"]["name"],
+            json!(CALCULATOR_ADD_TOOL_NAME)
+        );
+    }
+
+    #[test]
+    fn assistant_and_tool_messages_use_openai_tool_call_format() {
+        let response = tool_call_response();
+        let assistant_message = build_assistant_tool_call_message(&response).unwrap();
+        let tool_call = parse_tool_calls(&response).unwrap().remove(0);
+        let tool_message = build_tool_result_message(&tool_call, &json!({ "result": 2 }));
+
+        assert_eq!(assistant_message["role"], json!("assistant"));
+        assert_eq!(assistant_message["tool_calls"][0]["id"], json!("call_1"));
+        assert_eq!(tool_message["role"], json!("tool"));
+        assert_eq!(tool_message["tool_call_id"], json!("call_1"));
+        assert_eq!(tool_message["name"], json!(CALCULATOR_ADD_TOOL_NAME));
+        assert_eq!(tool_message["content"], json!("{\"result\":2}"));
+    }
+
+    #[test]
+    fn final_response_trace_records_normal_message() {
+        let completion = ChatCompletionResult {
+            duration_ms: 12,
+            request_body: json!({ "messages": [] }),
+            response_body: json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "The result is 2."
+                    }
+                }]
+            }),
+        };
+        let mut traces = Vec::new();
+        let mut step_index = 1;
+        let mut ignore_trace = |_event: &ToolTraceEvent| {};
+
+        push_final_response_trace(
+            "task",
+            &mut traces,
+            &mut step_index,
+            &completion,
+            false,
+            &mut ignore_trace,
+        );
+
+        assert_eq!(traces[0].title, "final_response");
+        assert!(matches!(traces[0].status, TraceStatus::Success));
+        assert_eq!(
+            traces[0].output_summary.as_deref(),
+            Some("The result is 2.")
+        );
+        assert_eq!(traces[0].duration_ms, Some(12));
+    }
+
+    #[test]
+    fn final_response_trace_can_warn_when_required_tool_was_not_called() {
+        let completion = ChatCompletionResult {
+            duration_ms: 8,
+            request_body: json!({ "messages": [] }),
+            response_body: json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "I can answer without a tool."
+                    }
+                }]
+            }),
+        };
+        let mut traces = Vec::new();
+        let mut step_index = 1;
+        let mut ignore_trace = |_event: &ToolTraceEvent| {};
+
+        push_final_response_trace(
+            "task",
+            &mut traces,
+            &mut step_index,
+            &completion,
+            true,
+            &mut ignore_trace,
+        );
+
+        assert_eq!(traces[0].title, "model_did_not_call_tool");
+        assert!(matches!(traces[0].status, TraceStatus::Warning));
+        assert_eq!(
+            traces[0].output_summary.as_deref(),
+            Some("model_did_not_call_tool")
+        );
+    }
+
+    #[test]
+    fn run_agent_openai_loop_executes_calculator_tool() {
+        let (base_url, server_thread) = start_mock_openai_server(vec![
+            tool_call_response_with_name(CALCULATOR_ADD_TOOL_NAME),
+            final_message_response("The result is 2."),
+        ]);
+        let project = test_project();
+        let settings = test_settings(&base_url);
+        let input = AgentRunInput {
+            project_id: project.id.clone(),
+            user_prompt: "请调用 calculator.add 计算 1+1".to_string(),
+            messages: None,
+            provider_id: Some("provider".to_string()),
+            credential_id: Some("default".to_string()),
+            model_id: Some("test-model".to_string()),
+        };
+
+        let run =
+            tauri::async_runtime::block_on(run_agent(&project, &settings, input, |_event| {}))
+                .unwrap();
+        let requests = server_thread.join().unwrap();
+
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["tool_choice"], json!("auto"));
+        assert_eq!(
+            requests[0]["tools"][0]["function"]["name"],
+            json!(CALCULATOR_ADD_TOOL_NAME)
+        );
+        assert!(requests[1]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| {
+                message["role"].as_str() == Some("tool")
+                    && message["tool_call_id"].as_str() == Some("call_1")
+                    && message["name"].as_str() == Some(CALCULATOR_ADD_TOOL_NAME)
+                    && message["content"].as_str() == Some("{\"result\":2}")
+            }));
+        assert!(run.traces.iter().any(|event| {
+            matches!(&event.event_type, TraceEventType::ToolCall)
+                && event.tool_name.as_deref() == Some(CALCULATOR_ADD_TOOL_NAME)
+        }));
+        assert!(run.traces.iter().any(|event| {
+            matches!(&event.event_type, TraceEventType::ToolResult)
+                && event.tool_name.as_deref() == Some(CALCULATOR_ADD_TOOL_NAME)
+                && event.output_summary.as_deref() == Some("result=2")
+        }));
+        assert!(run.traces.iter().any(|event| {
+            event.title == "final_response"
+                && event.output_summary.as_deref() == Some("The result is 2.")
+        }));
+    }
+
+    #[test]
+    fn run_agent_emits_trace_events_while_running() {
+        let (base_url, server_thread) =
+            start_mock_openai_server(vec![final_message_response("Done.")]);
+        let project = test_project();
+        let settings = test_settings(&base_url);
+        let input = AgentRunInput {
+            project_id: project.id.clone(),
+            user_prompt: "hello".to_string(),
+            messages: None,
+            provider_id: Some("provider".to_string()),
+            credential_id: Some("default".to_string()),
+            model_id: Some("test-model".to_string()),
+        };
+        let mut streamed_titles = Vec::new();
+
+        let run = tauri::async_runtime::block_on(run_agent(&project, &settings, input, |event| {
+            streamed_titles.push(event.title.clone())
+        }))
+        .unwrap();
+        let requests = server_thread.join().unwrap();
+
+        assert_eq!(requests.len(), 1);
+        assert_eq!(run.traces.len(), streamed_titles.len());
+        assert!(streamed_titles.iter().any(|title| title == "llm_request:1"));
+        assert!(streamed_titles
+            .iter()
+            .any(|title| title == "llm_response:1"));
+        assert!(streamed_titles
+            .iter()
+            .any(|title| title == "final_response"));
+    }
+
+    #[test]
+    fn run_tool_call_test_reuses_openai_loop() {
+        let (base_url, server_thread) = start_mock_openai_server(vec![
+            tool_call_response_with_name(CALCULATOR_ADD_TOOL_NAME),
+            final_message_response("The result is 2."),
+        ]);
+        let project = test_project();
+        let settings = test_settings(&base_url);
+        let mut streamed_titles = Vec::new();
+
+        let run = tauri::async_runtime::block_on(run_tool_call_test(
+            &project,
+            &settings,
+            Some("provider"),
+            Some("default"),
+            Some("test-model"),
+            |event| streamed_titles.push(event.title.clone()),
+        ))
+        .unwrap();
+        let requests = server_thread.join().unwrap();
+
+        assert_eq!(requests.len(), 2);
+        assert!(streamed_titles.iter().any(|title| title == "tool_call"));
+        assert!(run.traces.iter().any(|event| {
+            matches!(&event.event_type, TraceEventType::ToolResult)
+                && event.tool_name.as_deref() == Some(CALCULATOR_ADD_TOOL_NAME)
+        }));
+        assert!(run.traces.iter().any(|event| {
+            event.title == "final_response"
+                && event.output_summary.as_deref() == Some("The result is 2.")
+        }));
+    }
+
+    #[test]
+    fn run_agent_openai_loop_records_unknown_tool_failure() {
+        let (base_url, server_thread) = start_mock_openai_server(vec![
+            tool_call_response_with_name("missing.tool"),
+            final_message_response("The requested tool is not available."),
+        ]);
+        let project = test_project();
+        let settings = test_settings(&base_url);
+        let input = AgentRunInput {
+            project_id: project.id.clone(),
+            user_prompt: "请调用 missing.tool".to_string(),
+            messages: None,
+            provider_id: Some("provider".to_string()),
+            credential_id: Some("default".to_string()),
+            model_id: Some("test-model".to_string()),
+        };
+
+        let run =
+            tauri::async_runtime::block_on(run_agent(&project, &settings, input, |_event| {}))
+                .unwrap();
+        let requests = server_thread.join().unwrap();
+
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| {
+                message["role"].as_str() == Some("tool")
+                    && message["tool_call_id"].as_str() == Some("call_1")
+                    && message["name"].as_str() == Some("missing.tool")
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|content| content.contains("Unknown tool: missing.tool"))
+            }));
+        assert!(run.traces.iter().any(|event| {
+            event.title == "tool execution failed"
+                && matches!(&event.status, TraceStatus::Failed)
+                && event
+                    .output_summary
+                    .as_deref()
+                    .is_some_and(|summary| summary.contains("Unknown tool: missing.tool"))
+        }));
+        assert!(run.traces.iter().any(|event| {
+            event.title == "final_response"
+                && event.output_summary.as_deref() == Some("The requested tool is not available.")
+        }));
+    }
+
+    fn tool_call_response() -> Value {
+        tool_call_response_with_name(CALCULATOR_ADD_TOOL_NAME)
+    }
+
+    fn tool_call_response_with_name(tool_name: &str) -> Value {
+        json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": "{\"a\":1,\"b\":1}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        })
+    }
+
+    fn final_message_response(message: &str) -> Value {
+        json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": message
+                },
+                "finish_reason": "stop"
+            }]
+        })
+    }
+
+    fn test_selected_model(provider_type: &str) -> SelectedModel {
+        SelectedModel {
+            provider: ProviderConfig {
+                id: "provider".to_string(),
+                name: "Provider".to_string(),
+                provider_type: provider_type.to_string(),
+                base_url: "https://example.test/v1".to_string(),
+                base_url_locked: false,
+                api_key: String::new(),
+                default_credential_id: "default".to_string(),
+                default_model: "test-model".to_string(),
+                enabled: true,
+                credentials: vec![ProviderCredential {
+                    id: "default".to_string(),
+                    name: "Default Key".to_string(),
+                    enabled: true,
+                    api_key: "test-key".to_string(),
+                }],
+                models: Vec::new(),
+                temperature: 0.0,
+            },
+            credential: Some(ProviderCredential {
+                id: "default".to_string(),
+                name: "Default Key".to_string(),
+                enabled: true,
+                api_key: "test-key".to_string(),
+            }),
+            model_id: "test-model".to_string(),
+        }
+    }
+
+    fn test_project() -> ProjectSession {
+        ProjectSession {
+            id: "project".to_string(),
+            name: "Project".to_string(),
+            repo_root: "D:\\code\\snowAgents".to_string(),
+            solution_path: "D:\\code\\snowAgents\\Project.sln".to_string(),
+            uproject_path: None,
+            build_command: None,
+            vs_process_id: None,
+            vs_bridge_endpoint: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    fn test_settings(base_url: &str) -> AppSettings {
+        let mut settings = AppSettings::default();
+        let mut provider = test_selected_model("openai").provider;
+        provider.base_url = base_url.to_string();
+        settings.providers = vec![provider];
+        settings
+    }
+
+    fn start_mock_openai_server(responses: Vec<Value>) -> (String, thread::JoinHandle<Vec<Value>>) {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", server.server_addr());
+        let handle = thread::spawn(move || {
+            responses
+                .into_iter()
+                .map(|response_body| {
+                    let mut request = server
+                        .recv_timeout(Duration::from_secs(10))
+                        .unwrap()
+                        .expect("expected chat completion request");
+                    let request_body = read_request_body(&mut request);
+                    request
+                        .respond(json_response(response_body))
+                        .expect("mock response should be sent");
+                    serde_json::from_str::<Value>(&request_body).unwrap()
+                })
+                .collect::<Vec<_>>()
+        });
+        (base_url, handle)
+    }
+
+    fn read_request_body(request: &mut Request) -> String {
+        let mut body = String::new();
+        request.as_reader().read_to_string(&mut body).unwrap();
+        body
+    }
+
+    fn json_response(body: Value) -> Response<std::io::Cursor<Vec<u8>>> {
+        Response::from_string(body.to_string())
+            .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
+    }
 }

@@ -1,5 +1,5 @@
 import type { ProviderConfig } from '../types/provider'
-import { minimaxOpenAiBaseUrl } from '../types/provider'
+import { codeBuddyOpenAiBaseUrl, minimaxOpenAiBaseUrl } from '../types/provider'
 import type { ProjectSession } from '../types/project'
 import type { AppSettings, UiPreferences } from '../types/settings'
 import type { AgentTask } from '../types/task'
@@ -37,10 +37,33 @@ export const defaultProviders: ProviderConfig[] = [
     enabled: false,
     baseUrl: '',
     baseUrlLocked: false,
-    apiKey: '',
+    defaultCredentialId: '',
     defaultModel: 'gpt-4.1',
     temperature: 0.2,
+    credentials: [],
     models: [],
+  },
+  {
+    id: 'codebuddy',
+    type: 'codebuddy',
+    name: 'CodeBuddy VSCode',
+    enabled: false,
+    baseUrl: codeBuddyOpenAiBaseUrl,
+    baseUrlLocked: true,
+    defaultCredentialId: '',
+    defaultModel: 'glm-5.1',
+    temperature: 1,
+    credentials: [],
+    models: [
+      { id: 'glm-5.1', name: 'GLM-5.1', enabled: false },
+      { id: 'glm-5.0-turbo', name: 'GLM-5.0-Turbo', enabled: false },
+      { id: 'glm-5v-turbo', name: 'GLM-5v-Turbo', enabled: false },
+      { id: 'kimi-k2.6', name: 'Kimi-K2.6', enabled: false },
+      { id: 'hy3-preview', name: 'Hy3 preview', enabled: false },
+      { id: 'deepseek-v4-pro', name: 'Deepseek-V4-Pro', enabled: false },
+      { id: 'deepseek-v4-flash', name: 'Deepseek-V4-Flash', enabled: false },
+      { id: 'deepseek-v3-2-volc', name: 'DeepSeek V3.2', enabled: false },
+    ],
   },
   {
     id: 'claude',
@@ -49,9 +72,10 @@ export const defaultProviders: ProviderConfig[] = [
     enabled: false,
     baseUrl: '',
     baseUrlLocked: false,
-    apiKey: '',
+    defaultCredentialId: '',
     defaultModel: 'Claude 4.1 Sonnet',
     temperature: 0.2,
+    credentials: [],
     models: [],
   },
   {
@@ -61,9 +85,10 @@ export const defaultProviders: ProviderConfig[] = [
     enabled: false,
     baseUrl: '',
     baseUrlLocked: false,
-    apiKey: '',
+    defaultCredentialId: '',
     defaultModel: 'deepseek-chat',
     temperature: 0.2,
+    credentials: [],
     models: [],
   },
   {
@@ -73,9 +98,10 @@ export const defaultProviders: ProviderConfig[] = [
     enabled: false,
     baseUrl: minimaxOpenAiBaseUrl,
     baseUrlLocked: true,
-    apiKey: '',
+    defaultCredentialId: '',
     defaultModel: 'MiniMax-M2.7',
     temperature: 0.2,
+    credentials: [],
     models: [],
   },
   {
@@ -85,9 +111,10 @@ export const defaultProviders: ProviderConfig[] = [
     enabled: false,
     baseUrl: 'http://127.0.0.1:11434',
     baseUrlLocked: false,
-    apiKey: '',
+    defaultCredentialId: '',
     defaultModel: 'llama3.1',
     temperature: 0.2,
+    credentials: [],
     models: [],
   },
   {
@@ -97,9 +124,10 @@ export const defaultProviders: ProviderConfig[] = [
     enabled: false,
     baseUrl: '',
     baseUrlLocked: false,
-    apiKey: '',
+    defaultCredentialId: '',
     defaultModel: 'local-default',
     temperature: 0.2,
+    credentials: [],
     models: [],
   },
 ]
@@ -209,17 +237,37 @@ function mergeProviders(providers: ProviderConfig[]): ProviderConfig[] {
     baseUrl:
       provider.id === 'minimax'
         ? minimaxOpenAiBaseUrl
+        : provider.id === 'codebuddy'
+          ? codeBuddyOpenAiBaseUrl
         : providedById.get(provider.id)?.baseUrl ?? provider.baseUrl,
     baseUrlLocked:
-      provider.id === 'minimax'
+      provider.id === 'minimax' || provider.id === 'codebuddy'
         ? true
         : providedById.get(provider.id)?.baseUrlLocked ?? provider.baseUrlLocked,
+    credentials: normalizeProviderCredentials(providedById.get(provider.id) ?? provider),
     models: providedById.get(provider.id)?.models ?? provider.models,
   }))
   const customProviders = providers.filter(
     (provider) => !defaultProviders.some((defaultProvider) => defaultProvider.id === provider.id),
   )
   return [...mergedDefaults, ...customProviders]
+}
+
+function normalizeProviderCredentials(provider: ProviderConfig): ProviderConfig['credentials'] {
+  if (provider.credentials?.length > 0) {
+    return provider.credentials
+  }
+  if (provider.apiKey?.trim()) {
+    return [
+      {
+        id: 'default',
+        name: 'Default Key',
+        enabled: true,
+        apiKey: provider.apiKey,
+      },
+    ]
+  }
+  return []
 }
 
 function emptyPersistedWorkspaceState(): PersistedWorkspaceState {
@@ -240,10 +288,21 @@ function readTasksById(value: unknown): Record<string, AgentTask> {
     return {}
   }
   return Object.fromEntries(
-    Object.entries(value).filter((entry): entry is [string, AgentTask] =>
-      isAgentTask(entry[1]),
-    ),
+    Object.entries(value)
+      .filter((entry): entry is [string, AgentTask] => isAgentTask(entry[1]))
+      .map(([taskId, task]) => [taskId, restorePersistedTask(task)]),
   )
+}
+
+function restorePersistedTask(task: AgentTask): AgentTask {
+  if (task.status !== 'running') {
+    return task
+  }
+
+  return {
+    ...task,
+    status: 'failed',
+  }
 }
 
 function readTaskIdsByProjectId(

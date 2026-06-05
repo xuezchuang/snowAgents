@@ -405,6 +405,7 @@ function isOpenAiLikeProvider(providerType: string): boolean {
   return [
     'openai',
     'openai-compatible',
+    'codebuddy',
     'deepseek',
     'minimax',
     'local-gateway',

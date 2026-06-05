@@ -1,5 +1,6 @@
 export type ProviderType =
   | 'openai-compatible'
+  | 'codebuddy'
   | 'claude'
   | 'deepseek'
   | 'minimax'
@@ -13,10 +14,19 @@ export interface ProviderConfig {
   enabled: boolean
   baseUrl: string
   baseUrlLocked: boolean
-  apiKey: string
+  apiKey?: string
+  defaultCredentialId: string
   defaultModel: string
   temperature: number
+  credentials: ProviderCredential[]
   models: ProviderModel[]
+}
+
+export interface ProviderCredential {
+  id: string
+  name: string
+  enabled: boolean
+  apiKey: string
 }
 
 export interface ProviderModel {
@@ -29,6 +39,7 @@ export interface ProviderModel {
 
 export const providerTypeLabels: Record<ProviderType, string> = {
   'openai-compatible': 'OpenAI-Compatible',
+  codebuddy: 'CodeBuddy',
   claude: 'Claude',
   deepseek: 'DeepSeek',
   minimax: 'MiniMax',
@@ -37,3 +48,4 @@ export const providerTypeLabels: Record<ProviderType, string> = {
 }
 
 export const minimaxOpenAiBaseUrl = 'https://api.minimaxi.com/v1'
+export const codeBuddyOpenAiBaseUrl = 'https://copilot.tencent.com/v2'

@@ -136,11 +136,13 @@ pub fn run_mock_agent(
 pub struct ToolCallTestInput {
     pub project_id: String,
     pub provider_id: Option<String>,
+    pub credential_id: Option<String>,
     pub model_id: Option<String>,
 }
 
 #[tauri::command]
 pub async fn run_agent(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     input: AgentRunInput,
 ) -> Result<MockAgentRun, String> {
@@ -152,8 +154,15 @@ pub async fn run_agent(
         let settings_store = state.settings.lock().map_err(|_| lock_error())?;
         current_settings(&settings_store)
     };
+    let trace_state = state.inner().clone();
 
-    let run = agent_runner::run_agent(&project, &settings, input).await?;
+    let run = agent_runner::run_agent(&project, &settings, input, move |event| {
+        if let Ok(mut traces) = trace_state.traces.lock() {
+            traces.append_event(&event.task_id, event.clone());
+        }
+        let _ = app_handle.emit("agent_trace_event", event.clone());
+    })
+    .await?;
     let mut traces = state.traces.lock().map_err(|_| lock_error())?;
     traces.insert_task(run.task_id.clone(), run.traces.clone());
     Ok(run)
@@ -179,6 +188,7 @@ pub async fn run_tool_call_test(
         &project,
         &settings,
         input.provider_id.as_deref(),
+        input.credential_id.as_deref(),
         input.model_id.as_deref(),
         move |event| {
             if let Ok(mut traces) = trace_state.traces.lock() {

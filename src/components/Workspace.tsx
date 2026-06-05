@@ -75,8 +75,6 @@ function Workspace({
     const header = workspace.querySelector<HTMLElement>('.workspace-header')
     const actions = workspace.querySelector<HTMLElement>('.workspace-topbar-actions')
     const identity = workspace.querySelector<HTMLElement>('.workspace-identity')
-    const chatTimeline = workspace.querySelector<HTMLElement>('.chat-timeline')
-    const traceBody = workspace.querySelector<HTMLElement>('.trace-drawer-body')
     if (!header || (!actions && !identity)) {
       setHeaderDivided(false)
       return
@@ -85,9 +83,11 @@ function Workspace({
     const protectedRects = [identity, actions]
       .filter((element): element is HTMLElement => element !== null)
       .map((element) => element.getBoundingClientRect())
-    const contentRects = [chatTimeline, traceBody]
-      .filter((element): element is HTMLElement => element !== null)
-      .map((element) => element.getBoundingClientRect())
+    const contentRects = Array.from(
+      workspace.querySelectorAll<HTMLElement>(
+        '.message-body, .chat-empty-content, .drawer-trace-row',
+      ),
+    ).map((element) => element.getBoundingClientRect())
     const nextDivided = contentRects.some((contentRect) =>
       protectedRects.some((protectedRect) => rectsIntersect(contentRect, protectedRect)),
     )
@@ -135,12 +135,14 @@ function Workspace({
         return
       }
       setSelectedTrace((current) => {
-        if (!current || !task) {
+        if (!task) {
           return null
         }
-        return task.messages.some((message) => message.taskId === current.taskId) ?
-            current
-          : null
+        if (!current) {
+          const firstTrace = task.traceEvents[0]
+          return firstTrace ? { taskId: firstTrace.taskId, events: task.traceEvents } : null
+        }
+        return taskHasTraceSelection(task, current.taskId) ? current : null
       })
     })
     return () => {
@@ -158,7 +160,7 @@ function Workspace({
 
   const runTask = async (
     prompt: string,
-    selection: { providerId: string | null; modelId: string | null },
+    selection: { providerId: string | null; credentialId: string | null; modelId: string | null },
   ) => {
     if (!activeProject) {
       return
@@ -171,6 +173,7 @@ function Workspace({
         {
           ...currentTask,
           messages: [...currentTask.messages, userMessage],
+          traceEvents: [],
           status: 'running',
         }
       : {
@@ -182,16 +185,39 @@ function Workspace({
           status: 'running',
         }
     const messages = createConversationMessages(pendingTask.messages)
+    let unlisten: UnlistenFn | null = null
 
     setBusy(true)
-    setState((current) => addOrReplaceSessionTask(current, activeProject.id, pendingTask))
+    setSelectedTrace(null)
+    setState((current) => ({
+      ...addOrReplaceSessionTask(current, activeProject.id, pendingTask),
+      traceDrawerOpen: true,
+    }))
 
     try {
+      unlisten = await listen<ToolTraceEvent>(traceEventName, (event) => {
+        const traceEvent = event.payload
+        if (!isToolTraceEvent(traceEvent)) {
+          return
+        }
+        setSelectedTrace((current) => ({
+          taskId: traceEvent.taskId,
+          events:
+            current?.taskId === traceEvent.taskId ?
+              appendTraceEvent(current.events, traceEvent)
+            : [traceEvent],
+        }))
+        setState((current) =>
+          appendTraceEventToSession(current, sessionTaskId, traceEvent),
+        )
+      })
+
       const run = await runAgent({
         projectId: activeProject.id,
         userPrompt: prompt,
         messages,
         providerId: selection.providerId,
+        credentialId: selection.credentialId,
         modelId: selection.modelId,
       })
       const assistantMessage = createAssistantMessage(run.taskId, run.traces)
@@ -213,12 +239,13 @@ function Workspace({
       )
       showWorkspaceToast('error', message)
     } finally {
+      unlisten?.()
       setBusy(false)
     }
   }
 
   const runToolCallTestTask = async (
-    selection: { providerId: string | null; modelId: string | null },
+    selection: { providerId: string | null; credentialId: string | null; modelId: string | null },
   ) => {
     if (!activeProject) {
       return
@@ -264,6 +291,7 @@ function Workspace({
       const run = await runToolCallTest({
         projectId: activeProject.id,
         providerId: selection.providerId,
+        credentialId: selection.credentialId,
         modelId: selection.modelId,
       })
       const assistantMessage = createAssistantMessage(run.taskId, run.traces)
@@ -631,6 +659,13 @@ function appendTraceEventToSession(
       },
     },
   }
+}
+
+function taskHasTraceSelection(task: AgentTask, taskId: string): boolean {
+  return (
+    task.messages.some((message) => message.taskId === taskId) ||
+    task.traceEvents.some((event) => event.taskId === taskId)
+  )
 }
 
 function appendTraceEvent(

@@ -131,6 +131,79 @@ Rust tests:
 cargo test --manifest-path src-tauri\Cargo.toml
 ```
 
+## Repository Search Tools
+
+The first-stage agent tool layer exposes read-only workspace tools through the backend tool registry. They are available to OpenAI-compatible tool calling in `run_agent` and `run_tool_call_test`; they are not Tauri UI commands.
+
+All paths are normalized and canonicalized against the active project `repoRoot`. Tool results use workspace-relative paths. Default ignored directories are `.git`, `.vs`, `bin`, `obj`, `build`, `out`, `node_modules`, and `.cache`.
+
+### `list_dir`
+
+Input:
+
+```json
+{ "path": "." }
+```
+
+Output includes sorted `directories` first and sorted `files` second.
+
+### `read_file`
+
+Input:
+
+```json
+{ "path": "src-tauri/src/agent_runner.rs", "start_line": 1, "end_line": 120 }
+```
+
+Output includes `file`, `totalLines`, `startLine`, `endLine`, `truncated`, optional `message`, and `lines` entries shaped as `{ "line": 1, "text": "..." }`. The default read limit is 300 lines; large files return a `too_many_results` hint so the agent can request a narrower range.
+
+### `search_file`
+
+Input:
+
+```json
+{ "pattern": "agent_runner.rs", "root": ".", "max_results": 20 }
+```
+
+Output includes ranked workspace-relative file paths. Exact filename matches rank before filename contains matches, fuzzy filename matches, and path matches.
+
+### `search_content`
+
+Input:
+
+```json
+{
+  "query": "run_openai_tool_agent_loop",
+  "root": "src-tauri",
+  "file_glob": "*.rs",
+  "max_results": 20,
+  "context_lines": 2,
+  "case_sensitive": false,
+  "regex": false
+}
+```
+
+Output matches are structured as `file`, `line`, `column`, `text`, `before`, and `after`. The backend uses `rg` when available, otherwise it falls back to ordinary file traversal. Without `file_glob`, content search defaults to common C/C++ and Visual Studio project/text extensions: `.h`, `.hpp`, `.c`, `.cpp`, `.cc`, `.cxx`, `.inl`, `.ixx`, `.cs`, `.sln`, `.vcxproj`, `.props`, `.targets`, `.json`, `.xml`, `.txt`, and `.md`.
+
+### `get_file_context`
+
+Input:
+
+```json
+{ "path": "src-tauri/src/agent_runner.rs", "line": 350, "before": 30, "after": 30 }
+```
+
+Output includes line-numbered context around the requested line. Defaults are `before = 30` and `after = 30`.
+
+Common error codes are returned as clear string prefixes, including `file_not_found`, `path_outside_workspace`, `binary_file`, `too_many_results`, and `invalid_regex`.
+
+Minimal verification:
+
+```powershell
+cargo test --manifest-path src-tauri\Cargo.toml
+npm run tauri build
+```
+
 ## VSIX Bridge
 
 The current VSIX project still uses the legacy path:
@@ -269,8 +342,7 @@ Do not store credentials, chat history, patch history, or important user data in
 - [ ] Add model provider abstraction.
 - [ ] Add OpenAI-compatible provider.
 - [ ] Add basic tool registry.
-- [ ] Add `file.read`.
-- [ ] Add `file.search`.
+- [x] Add read-only repository tools: `list_dir`, `read_file`, `search_file`, `search_content`, `get_file_context`.
 - [ ] Add `file.apply_patch`.
 - [ ] Add `git.diff`.
 - [ ] Add trace data model.

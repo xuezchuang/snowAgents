@@ -1,11 +1,13 @@
 import {
+  ChevronDown,
+  ChevronRight,
   Edit3,
   Folder,
   FolderKanban,
-  MoreHorizontal,
   Settings as SettingsIcon,
   UserRound,
 } from 'lucide-react'
+import { useState } from 'react'
 import type { View } from '../state/appState'
 import type { ProjectSession } from '../types/project'
 import type { AgentTask } from '../types/task'
@@ -38,6 +40,20 @@ function Sidebar({
   onOpenHistoryTask,
   onNewChat,
 }: SidebarProps) {
+  const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set())
+
+  function toggleProjectHistory(projectId: string) {
+    setCollapsedProjectIds((current) => {
+      const next = new Set(current)
+      if (next.has(projectId)) {
+        next.delete(projectId)
+      } else {
+        next.add(projectId)
+      }
+      return next
+    })
+  }
+
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -74,6 +90,8 @@ function Sidebar({
               .filter((task): task is AgentTask => Boolean(task))
               .reverse()
             const active = view === 'workspace' && project.id === activeProjectId
+            const collapsed = collapsedProjectIds.has(project.id)
+            const hasHistory = projectTasks.length > 0
 
             return (
               <div className="sidebar-project-group" key={project.id}>
@@ -90,7 +108,19 @@ function Sidebar({
                   >
                     <Folder size={15} aria-hidden="true" />
                     <span>{project.name}</span>
-                    <MoreHorizontal className="sidebar-project-more" size={14} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="sidebar-project-toggle"
+                    onClick={() => toggleProjectHistory(project.id)}
+                    title={`${collapsed ? 'Show' : 'Hide'} chats in ${project.name}`}
+                    aria-label={`${collapsed ? 'Show' : 'Hide'} chats in ${project.name}`}
+                    aria-expanded={!collapsed}
+                    disabled={!hasHistory}
+                  >
+                    {collapsed ?
+                      <ChevronRight size={14} aria-hidden="true" />
+                    : <ChevronDown size={14} aria-hidden="true" />}
                   </button>
                   <button
                     type="button"
@@ -102,7 +132,7 @@ function Sidebar({
                     <Edit3 size={14} aria-hidden="true" />
                   </button>
                 </div>
-                {projectTasks.length > 0 ? (
+                {hasHistory && !collapsed ? (
                   <WorkspaceHistoryList
                     key={`${project.id}:${historyDays}`}
                     tasks={projectTasks}

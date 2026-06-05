@@ -103,9 +103,82 @@ function RawToggle({
       <button type="button" className="trace-raw-toggle" onClick={onToggle}>
         {open ? label.replace('View', 'Hide') : label}
       </button>
-      {open ? <pre className="trace-raw-code">{JSON.stringify(value, null, 2)}</pre> : null}
+      {open ? <pre className="trace-raw-code">{formatRawJson(value)}</pre> : null}
     </div>
   )
+}
+
+const preferredRawJsonKeyOrder = [
+  'model',
+  'messages',
+  'tools',
+  'tool_choice',
+  'temperature',
+  'stream',
+  'role',
+  'content',
+  'tool_calls',
+  'tool_call_id',
+  'id',
+  'type',
+  'function',
+  'name',
+  'arguments',
+  'projectId',
+  'projectName',
+  'prompt',
+  'provider',
+  'baseUrl',
+  'request',
+  'response',
+  'message',
+  'toolName',
+  'error',
+  'recoveryHint',
+  'file',
+  'path',
+  'root',
+  'line',
+  'column',
+  'text',
+  'before',
+  'after',
+]
+
+function formatRawJson(value: unknown): string {
+  return JSON.stringify(orderRawJson(value), null, 2)
+}
+
+function orderRawJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => orderRawJson(item))
+  }
+
+  if (!isRecord(value)) {
+    return value
+  }
+
+  const orderedEntries: [string, unknown][] = []
+  const usedKeys = new Set<string>()
+
+  for (const key of preferredRawJsonKeyOrder) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) {
+      orderedEntries.push([key, orderRawJson(value[key])])
+      usedKeys.add(key)
+    }
+  }
+
+  for (const [key, entry] of Object.entries(value)) {
+    if (!usedKeys.has(key)) {
+      orderedEntries.push([key, orderRawJson(entry)])
+    }
+  }
+
+  return Object.fromEntries(orderedEntries)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 export default TraceEventRow

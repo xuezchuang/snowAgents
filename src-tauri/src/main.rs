@@ -12,8 +12,10 @@ mod tool_registry;
 mod tool_trace;
 mod vs_bridge_service;
 mod vs_registry;
+mod workspace_tools;
 
 use app_state::AppState;
+use tauri::Manager;
 
 fn main() {
     let state = AppState::load().unwrap_or_else(|error| {
@@ -25,7 +27,14 @@ fn main() {
     tauri::Builder::default()
         .manage(state)
         .plugin(tauri_plugin_dialog::init())
-        .setup(move |_| {
+        .setup(move |app| {
+            if let (Some(window), Some(icon)) = (
+                app.get_webview_window("main"),
+                app.default_window_icon().cloned(),
+            ) {
+                window.set_icon(icon)?;
+            }
+
             desktop_http_server::start(http_state.clone()).map_err(|error| {
                 Box::<dyn std::error::Error>::from(std::io::Error::new(
                     std::io::ErrorKind::AddrInUse,

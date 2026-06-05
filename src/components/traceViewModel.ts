@@ -97,9 +97,9 @@ function toTraceStepViewModel(event: ToolTraceEvent): TraceStepViewModel {
       ...baseStep(event, 'Select model', rawInput, rawOutput),
       summaryItems: compactItems([
         item('Provider', stringValue(output.provider)),
+        item('Credential', stringValue(output.credential ?? input.credentialId)),
         item('Model', stringValue(output.model)),
         item('Base URL', stringValue(output.baseUrl)),
-        item('API Key', stringValue(output.apiKey ?? input.apiKey)),
       ]),
     }
   }

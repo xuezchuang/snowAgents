@@ -13,6 +13,14 @@ CodeForge is a Windows Tauri desktop app in the same broad category as Codex Des
 
 The current development focus is tool-calling experiments. Treat trace quality as product behavior, not as debug-only output.
 
+## Agent Safety Policy
+
+The project agent is a code editing assistant only. It may search files and code, read workspace files, analyze code, modify code, apply patches, show diffs, and read IDE/compiler/linter diagnostics when available.
+
+Do not automatically execute scripts, shell commands, installers, package managers, build commands, test commands, deploy commands, or unsafe tools. Do not run `.bat`, `.cmd`, `.ps1`, `.sh`, `.exe`, `.msi`, or similar files. Do not use generic shell tools such as `execute_command`, `run_shell`, `terminal`, or `powershell`. Do not install packages, download and execute scripts, or access files outside the workspace.
+
+If build or test support is needed later, implement explicit safe tools such as `build_solution` or `run_tests` with fixed command templates, workspace confinement, trace output, and user confirmation. Do not expose arbitrary shell execution.
+
 ## Architecture Boundaries
 
 - React owns UI rendering and calls typed Tauri commands from `src/api/tauriApi.ts`.
@@ -112,22 +120,7 @@ The VSIX should remain a semantic bridge. Model orchestration, task planning, pa
 
 ## Verification
 
-Use the smallest check that proves the change:
-
-```powershell
-npm run build
-npm run lint
-cargo check --manifest-path src-tauri\Cargo.toml
-cargo test --manifest-path src-tauri\Cargo.toml
-npm run tauri build
-```
-
-Notes:
-
-- Run `npm run tauri build` as the default final verification after every implementation, UI, or behavior change in this repository. Do not stop at `npm run build` unless the user explicitly asks to skip release build or the release build is blocked; if blocked, report the command and blocker.
-- Use `npm run tauri build` when the user asks for a release compile.
-- Use `npm run tauri dev` for real desktop behavior and Tauri backend testing.
-- Use `npm run dev` only for frontend-only layout checks; report that backend behavior was not exercised.
+Use the smallest safe check that proves the change. By default, prefer static review, diffs, and existing IDE/compiler/linter diagnostics. Do not run build, test, or dev-server commands automatically; use explicit safe tools with user confirmation if they are added later.
 
 ## Reporting
 

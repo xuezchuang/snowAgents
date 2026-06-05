@@ -42,11 +42,13 @@ export interface AgentRunInput {
   userPrompt: string
   messages?: AgentConversationMessage[]
   providerId: string | null
+  credentialId: string | null
   modelId: string | null
 }
 
 export interface ToolCallTestInput {
   projectId: string
   providerId: string | null
+  credentialId: string | null
   modelId: string | null
 }

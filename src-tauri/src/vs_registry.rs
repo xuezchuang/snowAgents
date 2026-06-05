@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::path_utils::normalize_display_path;
 
 pub const MINIMAX_OPENAI_BASE_URL: &str = "https://api.minimaxi.com/v1";
+pub const CODEBUDDY_OPENAI_BASE_URL: &str = "https://copilot.tencent.com/v2";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,7 +56,7 @@ pub struct UiPreferences {
     pub workspace_history_days: u32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfig {
     pub id: String,
@@ -66,14 +67,32 @@ pub struct ProviderConfig {
     pub base_url: String,
     #[serde(default)]
     pub base_url_locked: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub api_key: String,
+    #[serde(default)]
+    pub default_credential_id: String,
     pub default_model: String,
     pub temperature: f64,
+    #[serde(default)]
+    pub credentials: Vec<ProviderCredential>,
     #[serde(default)]
     pub models: Vec<ProviderModel>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderCredential {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub api_key: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModel {
     pub id: String,
@@ -101,6 +120,10 @@ impl SettingsStore {
             AppSettings::default()
         };
         settings.data_dir = normalize_display_path(&data_dir);
+        let normalized_providers = normalize_providers(settings.providers.clone());
+        let should_save_providers = normalized_providers != settings.providers;
+        settings.providers = normalized_providers;
+
         let mut store = Self { path, settings };
         if let Some(devenv_path) = store.settings.devenv_path.as_mut() {
             let normalized = normalize_display_path(devenv_path);
@@ -109,8 +132,7 @@ impl SettingsStore {
                 store.save()?;
             }
         }
-        if store.settings.providers.is_empty() {
-            store.settings.providers = default_providers();
+        if should_save_providers {
             store.save()?;
         }
         Ok(store)
@@ -188,6 +210,20 @@ fn default_providers() -> Vec<ProviderConfig> {
             "OpenAI-Compatible",
             "gpt-4.1",
         ),
+        ProviderConfig {
+            id: "codebuddy".to_string(),
+            provider_type: "codebuddy".to_string(),
+            name: "CodeBuddy VSCode".to_string(),
+            enabled: false,
+            base_url: CODEBUDDY_OPENAI_BASE_URL.to_string(),
+            base_url_locked: true,
+            api_key: String::new(),
+            default_credential_id: String::new(),
+            default_model: "glm-5.1".to_string(),
+            temperature: 1.0,
+            credentials: Vec::new(),
+            models: codebuddy_models(),
+        },
         provider("claude", "claude", "Claude", "Claude 4.1 Sonnet"),
         provider("deepseek", "deepseek", "DeepSeek", "deepseek-chat"),
         provider("minimax", "minimax", "MiniMax", "MiniMax-M2.7"),
@@ -199,8 +235,10 @@ fn default_providers() -> Vec<ProviderConfig> {
             base_url: "http://127.0.0.1:11434".to_string(),
             base_url_locked: false,
             api_key: String::new(),
+            default_credential_id: String::new(),
             default_model: "llama3.1".to_string(),
             temperature: 0.2,
+            credentials: Vec::new(),
             models: Vec::new(),
         },
         provider(
@@ -220,14 +258,41 @@ fn provider(id: &str, provider_type: &str, name: &str, default_model: &str) -> P
         enabled: false,
         base_url: if id == "minimax" {
             MINIMAX_OPENAI_BASE_URL.to_string()
+        } else if id == "codebuddy" {
+            CODEBUDDY_OPENAI_BASE_URL.to_string()
         } else {
             String::new()
         },
-        base_url_locked: id == "minimax",
+        base_url_locked: id == "minimax" || id == "codebuddy",
         api_key: String::new(),
+        default_credential_id: String::new(),
         default_model: default_model.to_string(),
         temperature: 0.2,
+        credentials: Vec::new(),
         models: Vec::new(),
+    }
+}
+
+fn codebuddy_models() -> Vec<ProviderModel> {
+    vec![
+        provider_model("glm-5.1", "GLM-5.1"),
+        provider_model("glm-5.0-turbo", "GLM-5.0-Turbo"),
+        provider_model("glm-5v-turbo", "GLM-5v-Turbo"),
+        provider_model("kimi-k2.6", "Kimi-K2.6"),
+        provider_model("hy3-preview", "Hy3 preview"),
+        provider_model("deepseek-v4-pro", "Deepseek-V4-Pro"),
+        provider_model("deepseek-v4-flash", "Deepseek-V4-Flash"),
+        provider_model("deepseek-v3-2-volc", "DeepSeek V3.2"),
+    ]
+}
+
+fn provider_model(id: &str, name: &str) -> ProviderModel {
+    ProviderModel {
+        id: id.to_string(),
+        name: name.to_string(),
+        enabled: false,
+        owned_by: None,
+        created: None,
     }
 }
 
@@ -252,40 +317,141 @@ fn normalize_ui_preferences(preferences: UiPreferences) -> UiPreferences {
 }
 
 fn normalize_providers(providers: Vec<ProviderConfig>) -> Vec<ProviderConfig> {
-    providers
+    let normalized = providers
         .into_iter()
-        .map(|provider| ProviderConfig {
-            id: provider.id.trim().to_string(),
-            provider_type: provider.provider_type.trim().to_string(),
-            name: provider.name.trim().to_string(),
-            base_url: if provider.id == "minimax" || provider.provider_type == "minimax" {
-                MINIMAX_OPENAI_BASE_URL.to_string()
-            } else {
-                provider.base_url.trim().to_string()
-            },
-            base_url_locked: provider.id == "minimax" || provider.provider_type == "minimax",
-            default_model: provider.default_model.trim().to_string(),
-            temperature: provider.temperature.clamp(0.0, 2.0),
-            models: provider
-                .models
-                .into_iter()
-                .map(|model| ProviderModel {
-                    id: model.id.trim().to_string(),
-                    name: if model.name.trim().is_empty() {
-                        model.id.trim().to_string()
-                    } else {
-                        model.name.trim().to_string()
-                    },
-                    enabled: model.enabled,
-                    owned_by: model.owned_by,
-                    created: model.created,
-                })
-                .filter(|model| !model.id.is_empty())
-                .collect(),
-            ..provider
+        .map(|provider| {
+            let id = provider.id.trim().to_string();
+            let provider_type = provider.provider_type.trim().to_string();
+            let legacy_api_key = provider.api_key.trim().to_string();
+            let credentials = normalize_credentials(provider.credentials, &legacy_api_key);
+            let default_credential_id = normalize_default_credential_id(
+                &provider.default_credential_id,
+                &credentials,
+            );
+            ProviderConfig {
+                id: id.clone(),
+                provider_type: provider_type.clone(),
+                name: provider.name.trim().to_string(),
+                base_url: if id == "minimax" || provider_type == "minimax" {
+                    MINIMAX_OPENAI_BASE_URL.to_string()
+                } else if id == "codebuddy" || provider_type == "codebuddy" {
+                    CODEBUDDY_OPENAI_BASE_URL.to_string()
+                } else {
+                    provider.base_url.trim().to_string()
+                },
+                base_url_locked: id == "minimax"
+                    || provider_type == "minimax"
+                    || id == "codebuddy"
+                    || provider_type == "codebuddy",
+                api_key: String::new(),
+                default_credential_id,
+                default_model: provider.default_model.trim().to_string(),
+                temperature: provider.temperature.clamp(0.0, 2.0),
+                credentials,
+                models: provider
+                    .models
+                    .into_iter()
+                    .map(|model| ProviderModel {
+                        id: model.id.trim().to_string(),
+                        name: if model.name.trim().is_empty() {
+                            model.id.trim().to_string()
+                        } else {
+                            model.name.trim().to_string()
+                        },
+                        enabled: model.enabled,
+                        owned_by: model.owned_by,
+                        created: model.created,
+                    })
+                    .filter(|model| !model.id.is_empty())
+                    .collect(),
+            }
         })
         .filter(|provider| !provider.id.is_empty() && !provider.name.is_empty())
+        .collect();
+    merge_default_providers(normalized)
+}
+
+fn normalize_credentials(
+    credentials: Vec<ProviderCredential>,
+    legacy_api_key: &str,
+) -> Vec<ProviderCredential> {
+    let source = if credentials.is_empty() && !legacy_api_key.is_empty() {
+        vec![ProviderCredential {
+            id: "default".to_string(),
+            name: "Default Key".to_string(),
+            enabled: true,
+            api_key: legacy_api_key.to_string(),
+        }]
+    } else {
+        credentials
+    };
+
+    source
+        .into_iter()
+        .enumerate()
+        .map(|(index, credential)| ProviderCredential {
+            id: if credential.id.trim().is_empty() {
+                format!("key-{}", index + 1)
+            } else {
+                credential.id.trim().to_string()
+            },
+            name: if credential.name.trim().is_empty() {
+                format!("Key {}", index + 1)
+            } else {
+                credential.name.trim().to_string()
+            },
+            enabled: credential.enabled,
+            api_key: credential.api_key.trim().to_string(),
+        })
+        .filter(|credential| !credential.id.is_empty())
         .collect()
+}
+
+fn normalize_default_credential_id(
+    default_credential_id: &str,
+    credentials: &[ProviderCredential],
+) -> String {
+    let requested = default_credential_id.trim();
+    if !requested.is_empty()
+        && credentials
+            .iter()
+            .any(|credential| credential.id == requested)
+    {
+        return requested.to_string();
+    }
+    credentials
+        .iter()
+        .find(|credential| credential.enabled)
+        .or_else(|| credentials.first())
+        .map(|credential| credential.id.clone())
+        .unwrap_or_default()
+}
+
+fn merge_default_providers(mut providers: Vec<ProviderConfig>) -> Vec<ProviderConfig> {
+    let mut merged = Vec::new();
+    for default_provider in default_providers() {
+        if let Some(index) = providers
+            .iter()
+            .position(|provider| provider.id == default_provider.id)
+        {
+            let mut provider = providers.remove(index);
+            if provider.default_model.is_empty() {
+                provider.default_model = default_provider.default_model;
+            }
+            if provider.default_credential_id.is_empty() {
+                provider.default_credential_id =
+                    normalize_default_credential_id("", &provider.credentials);
+            }
+            if provider.models.is_empty() {
+                provider.models = default_provider.models;
+            }
+            merged.push(provider);
+        } else {
+            merged.push(default_provider);
+        }
+    }
+    merged.extend(providers);
+    merged
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

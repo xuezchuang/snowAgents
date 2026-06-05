@@ -342,6 +342,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e4de3bc4ea267985becf712dc6d9eed8b04c953b3fcfb339ebc87acd9804901"
 
 [[package]]
+name = "codeforge-desktop"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tiny_http",
+ "uuid",
+]
+
+[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3026,22 +3043,6 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
-
-[[package]]
-name = "snowagent-desktop"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dirs",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tiny_http",
- "uuid",
-]
 
 [[package]]
 name = "socket2"

@@ -7,10 +7,44 @@
       "enabled": true,
       "baseUrl": "https://api.example.com/v1",
       "baseUrlLocked": false,
-      "apiKey": "YOUR_API_KEY_HERE",
+      "defaultCredentialId": "default",
       "defaultModel": "your-model-name",
       "temperature": 0.2,
+      "credentials": [
+        {
+          "id": "default",
+          "name": "Default Key",
+          "enabled": true,
+          "apiKey": "YOUR_API_KEY_HERE"
+        }
+      ],
       "models": []
+    },
+    {
+      "id": "codebuddy",
+      "type": "codebuddy",
+      "name": "CodeBuddy VSCode",
+      "enabled": false,
+      "baseUrl": "https://copilot.tencent.com/v2",
+      "baseUrlLocked": true,
+      "defaultCredentialId": "default",
+      "defaultModel": "glm-5.1",
+      "temperature": 1,
+      "credentials": [
+        {
+          "id": "default",
+          "name": "CodeBuddy Key",
+          "enabled": false,
+          "apiKey": "YOUR_CODEBUDDY_API_KEY_HERE"
+        }
+      ],
+      "models": [
+        {
+          "id": "glm-5.1",
+          "name": "GLM-5.1",
+          "enabled": false
+        }
+      ]
     }
   ]
 }
