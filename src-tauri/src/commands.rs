@@ -419,6 +419,7 @@ pub async fn fetch_minimax_models(api_key: String) -> Result<Vec<ProviderModel>,
             name: model.id.clone(),
             id: model.id,
             enabled: false,
+            credential_id: String::new(),
             owned_by: model.owned_by,
             created: model.created,
         })

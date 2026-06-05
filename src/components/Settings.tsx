@@ -89,13 +89,6 @@ function SettingsForm({
     }
   }
 
-  const saveProvider = async (provider: ProviderConfig) => {
-    const nextProviders = providers.map((item) =>
-      item.id === provider.id ? provider : item,
-    )
-    await saveSettings(nextProviders, uiPreferences, 'Provider saved')
-  }
-
   return (
     <section className="page-section settings-page">
       <div className="section-header">
@@ -127,7 +120,7 @@ function SettingsForm({
             onChange={setUiPreferences}
           />
         </div>
-        <ProviderSettings providers={providers} onSaveProvider={saveProvider} />
+        <ProviderSettings providers={providers} onProvidersChanged={onProvidersChanged} />
       </div>
     </section>
   )

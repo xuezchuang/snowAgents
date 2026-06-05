@@ -255,13 +255,19 @@ function mergeProviders(providers: ProviderConfig[]): ProviderConfig[] {
 
 function normalizeProviderCredentials(provider: ProviderConfig): ProviderConfig['credentials'] {
   if (provider.credentials?.length > 0) {
-    return provider.credentials
+    return provider.credentials.map((credential, index) => ({
+      ...credential,
+      id: credential.id?.trim() || `key-${index + 1}`,
+      name: credential.name?.trim() || `key-${index + 1}`,
+      apiKey: credential.apiKey ?? '',
+      enabled: Boolean(credential.enabled),
+    }))
   }
   if (provider.apiKey?.trim()) {
     return [
       {
         id: 'default',
-        name: 'Default Key',
+        name: 'key-1',
         enabled: true,
         apiKey: provider.apiKey,
       },

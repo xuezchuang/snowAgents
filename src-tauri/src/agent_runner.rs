@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::project_registry::ProjectSession;
 use crate::tool_registry::{self, ToolExecutionContext, CALCULATOR_ADD_TOOL_NAME};
 use crate::tool_trace::{self, MockAgentRun, ToolTraceEvent, TraceEventType, TraceStatus};
-use crate::vs_registry::{AppSettings, ProviderConfig, ProviderCredential};
+use crate::vs_registry::{AppSettings, ProviderConfig, ProviderCredential, ProviderModel};
 
 pub const TOOL_CALL_TEST_PROMPT: &str = "请必须调用 calculator.add 工具计算 1+1，然后告诉我结果。";
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 8;
@@ -846,14 +846,17 @@ fn select_model(
                     || provider
                         .models
                         .iter()
-                        .any(|model| model.enabled && model.id == *value))
+                        .any(|model| {
+                            model_is_enabled_for_credential(model, credential.as_ref())
+                                && model.id == *value
+                        }))
         })
         .map(str::to_string)
         .or_else(|| {
             provider
                 .models
                 .iter()
-                .find(|model| model.enabled)
+                .find(|model| model_is_enabled_for_credential(model, credential.as_ref()))
                 .map(|model| model.id.clone())
         })
         .unwrap_or_else(|| provider.default_model.clone());
@@ -867,6 +870,22 @@ fn select_model(
         credential,
         model_id,
     })
+}
+
+fn model_is_enabled_for_credential(
+    model: &ProviderModel,
+    credential: Option<&ProviderCredential>,
+) -> bool {
+    if !model.enabled {
+        return false;
+    }
+    let model_credential_id = model.credential_id.trim();
+    if model_credential_id.is_empty() {
+        return true;
+    }
+    credential
+        .map(|credential| credential.id == model_credential_id)
+        .unwrap_or(false)
 }
 
 fn is_provider_usable(provider: &ProviderConfig) -> bool {

@@ -33,6 +33,7 @@ export interface ProviderModel {
   id: string
   name: string
   enabled: boolean
+  credentialId?: string
   ownedBy?: string | null
   created?: number | null
 }

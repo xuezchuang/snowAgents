@@ -98,6 +98,8 @@ pub struct ProviderModel {
     pub id: String,
     pub name: String,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub credential_id: String,
     #[serde(default)]
     pub owned_by: Option<String>,
     #[serde(default)]
@@ -291,6 +293,7 @@ fn provider_model(id: &str, name: &str) -> ProviderModel {
         id: id.to_string(),
         name: name.to_string(),
         enabled: false,
+        credential_id: String::new(),
         owned_by: None,
         created: None,
     }
@@ -328,10 +331,32 @@ fn normalize_providers(providers: Vec<ProviderConfig>) -> Vec<ProviderConfig> {
                 &provider.default_credential_id,
                 &credentials,
             );
+            let models = provider
+                .models
+                .into_iter()
+                .map(|model| ProviderModel {
+                    id: model.id.trim().to_string(),
+                    name: if model.name.trim().is_empty() {
+                        model.id.trim().to_string()
+                    } else {
+                        model.name.trim().to_string()
+                    },
+                    enabled: model.enabled,
+                    credential_id: normalize_model_credential_id(
+                        &model.credential_id,
+                        &default_credential_id,
+                        &credentials,
+                    ),
+                    owned_by: model.owned_by,
+                    created: model.created,
+                })
+                .filter(|model| !model.id.is_empty())
+                .collect();
             ProviderConfig {
                 id: id.clone(),
                 provider_type: provider_type.clone(),
                 name: provider.name.trim().to_string(),
+                enabled: provider.enabled,
                 base_url: if id == "minimax" || provider_type == "minimax" {
                     MINIMAX_OPENAI_BASE_URL.to_string()
                 } else if id == "codebuddy" || provider_type == "codebuddy" {
@@ -348,27 +373,34 @@ fn normalize_providers(providers: Vec<ProviderConfig>) -> Vec<ProviderConfig> {
                 default_model: provider.default_model.trim().to_string(),
                 temperature: provider.temperature.clamp(0.0, 2.0),
                 credentials,
-                models: provider
-                    .models
-                    .into_iter()
-                    .map(|model| ProviderModel {
-                        id: model.id.trim().to_string(),
-                        name: if model.name.trim().is_empty() {
-                            model.id.trim().to_string()
-                        } else {
-                            model.name.trim().to_string()
-                        },
-                        enabled: model.enabled,
-                        owned_by: model.owned_by,
-                        created: model.created,
-                    })
-                    .filter(|model| !model.id.is_empty())
-                    .collect(),
+                models,
             }
         })
         .filter(|provider| !provider.id.is_empty() && !provider.name.is_empty())
         .collect();
     merge_default_providers(normalized)
+}
+
+fn normalize_model_credential_id(
+    credential_id: &str,
+    default_credential_id: &str,
+    credentials: &[ProviderCredential],
+) -> String {
+    let credential_id = credential_id.trim();
+    if !credential_id.is_empty()
+        && credentials
+            .iter()
+            .any(|credential| credential.id == credential_id)
+    {
+        return credential_id.to_string();
+    }
+    if !default_credential_id.trim().is_empty() {
+        return default_credential_id.trim().to_string();
+    }
+    credentials
+        .first()
+        .map(|credential| credential.id.clone())
+        .unwrap_or_default()
 }
 
 fn normalize_credentials(
@@ -378,7 +410,7 @@ fn normalize_credentials(
     let source = if credentials.is_empty() && !legacy_api_key.is_empty() {
         vec![ProviderCredential {
             id: "default".to_string(),
-            name: "Default Key".to_string(),
+            name: "key-1".to_string(),
             enabled: true,
             api_key: legacy_api_key.to_string(),
         }]
@@ -396,7 +428,7 @@ fn normalize_credentials(
                 credential.id.trim().to_string()
             },
             name: if credential.name.trim().is_empty() {
-                format!("Key {}", index + 1)
+                format!("key-{}", index + 1)
             } else {
                 credential.name.trim().to_string()
             },
