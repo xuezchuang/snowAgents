@@ -1060,11 +1060,10 @@ fn select_model(
     let model_id = model_id
         .filter(|value| {
             !value.trim().is_empty()
-                && ((provider.models.is_empty())
-                    || provider.models.iter().any(|model| {
-                        model_is_enabled_for_credential(model, credential.as_ref())
-                            && model.id == *value
-                    }))
+                && provider.models.iter().any(|model| {
+                    model_is_enabled_for_credential(model, credential.as_ref())
+                        && model.id == *value
+                })
         })
         .map(str::to_string)
         .or_else(|| {
@@ -1074,7 +1073,12 @@ fn select_model(
                 .find(|model| model_is_enabled_for_credential(model, credential.as_ref()))
                 .map(|model| model.id.clone())
         })
-        .unwrap_or_else(|| provider.default_model.clone());
+        .ok_or_else(|| {
+            format!(
+                "No enabled model for provider {}. Enable at least one model in Settings first.",
+                provider.name
+            )
+        })?;
 
     if model_id.trim().is_empty() {
         return Err(format!("Model is empty for provider {}", provider.name));

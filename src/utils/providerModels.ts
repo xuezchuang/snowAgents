@@ -23,25 +23,18 @@ export function getSelectableModels(providers: ProviderConfig[]): SelectableMode
       ? (provider.credentials ?? []).filter((credential) => credential.enabled)
       : [{ id: null, name: null }]
     const enabledModels = (provider.models ?? []).filter((model) => model.enabled)
-    if (enabledModels.length > 0) {
-      return enabledModels.flatMap((model) => {
-        const modelCredentials =
-          providerUsesCredentials(provider) && model.credentialId
-            ? enabledCredentials.filter((credential) => credential.id === model.credentialId)
-            : enabledCredentials
-        return modelCredentials.map((credential) =>
-          selectableModel(provider, credential, model.id, model.name || model.id),
-        )
-      })
-    }
-
-    if (provider.defaultModel.trim().length === 0) {
+    if (enabledModels.length === 0) {
       return []
     }
-
-    return enabledCredentials.map((credential) =>
-      selectableModel(provider, credential, provider.defaultModel, provider.defaultModel),
-    )
+    return enabledModels.flatMap((model) => {
+      const modelCredentials =
+        providerUsesCredentials(provider) && model.credentialId
+          ? enabledCredentials.filter((credential) => credential.id === model.credentialId)
+          : enabledCredentials
+      return modelCredentials.map((credential) =>
+        selectableModel(provider, credential, model.id, model.name || model.id),
+      )
+    })
   })
 }
 

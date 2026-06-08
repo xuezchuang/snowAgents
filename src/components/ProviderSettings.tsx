@@ -738,15 +738,6 @@ function modelOptionsForCard(
     ),
   )
 
-  const defaultModel = defaultProvider?.defaultModel ?? provider.defaultModel
-  if (options.size === 0 && defaultModel.trim().length > 0) {
-    options.set(defaultModel, {
-      id: defaultModel,
-      name: defaultModel,
-      enabled: false,
-      credentialId: credential.id,
-    })
-  }
   return [...options.values()]
 }
 
