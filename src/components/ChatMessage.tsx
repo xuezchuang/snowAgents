@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Bot,
   Check,
@@ -42,10 +42,19 @@ function ChatMessage({
 }: ChatMessageProps) {
   const isUser = message.role === 'user'
   const displayContent = isUser ? message.content : sanitizeModelMessage(message.content)
+  const isRunningAssistant =
+    !isUser && message.status === 'running' && !hasTerminalTraceEvent(message.traceEvents ?? [])
+  const thinkingNowMs = useThinkingClock(isRunningAssistant)
+  const animateThinkingPrefix =
+    isRunningAssistant && displayContent.startsWith(THINKING_PREFIX)
   const [copiedTarget, setCopiedTarget] = useState<'user' | 'assistant' | null>(null)
   const thinkingSummary = useMemo(
-    () => createThinkingSummary(message.traceEvents ?? []),
-    [message.traceEvents],
+    () =>
+      createThinkingSummary(message.traceEvents ?? [], {
+        nowMs: thinkingNowMs,
+        running: isRunningAssistant,
+      }),
+    [isRunningAssistant, message.traceEvents, thinkingNowMs],
   )
   const copyText = (value: string, target: 'user' | 'assistant') => {
     if (!navigator.clipboard) {
@@ -82,7 +91,7 @@ function ChatMessage({
         {!isUser && thinkingSummary ? (
           <ThinkingPanel
             summary={thinkingSummary}
-            defaultOpen={message.status === 'running'}
+            defaultOpen={isRunningAssistant}
           />
         ) : null}
         {message.attachments && message.attachments.length > 0 ? (
@@ -99,14 +108,25 @@ function ChatMessage({
         ) : null}
         {displayContent.trim().length > 0 || !message.attachments?.length ? (
           <div className="message-content">
-            <MarkdownMessage
-              text={displayContent}
-              projectId={projectId}
-              taskId={message.taskId}
-              onCodeLinkResult={onCodeLinkResult}
-              onCodeLinkError={onCodeLinkError}
-              onTraceChanged={() => onTraceChanged(message.taskId)}
-            />
+            {animateThinkingPrefix ? (
+              <RunningAssistantContent
+                text={displayContent}
+                projectId={projectId}
+                taskId={message.taskId}
+                onCodeLinkResult={onCodeLinkResult}
+                onCodeLinkError={onCodeLinkError}
+                onTraceChanged={() => onTraceChanged(message.taskId)}
+              />
+            ) : (
+              <MarkdownMessage
+                text={displayContent}
+                projectId={projectId}
+                taskId={message.taskId}
+                onCodeLinkResult={onCodeLinkResult}
+                onCodeLinkError={onCodeLinkError}
+                onTraceChanged={() => onTraceChanged(message.taskId)}
+              />
+            )}
           </div>
         ) : null}
         {isUser ? (
@@ -221,6 +241,63 @@ interface MarkdownMessageProps {
 interface MarkdownCodeBlockProps {
   code: string
   language: string
+}
+
+const THINKING_PREFIX = 'Thinking...\n\n'
+
+function useThinkingClock(enabled: boolean): number {
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!enabled) {
+      setNowMs(Date.now())
+      return undefined
+    }
+
+    const timerId = window.setInterval(() => {
+      setNowMs(Date.now())
+    }, 1000)
+
+    return () => {
+      window.clearInterval(timerId)
+    }
+  }, [enabled])
+
+  return nowMs
+}
+
+function RunningAssistantContent({
+  text,
+  projectId,
+  taskId,
+  onCodeLinkResult,
+  onCodeLinkError,
+  onTraceChanged,
+}: MarkdownMessageProps) {
+  const detail = text.startsWith(THINKING_PREFIX) ? text.slice(THINKING_PREFIX.length) : text
+
+  return (
+    <>
+      <p className="markdown-paragraph running-thinking-line">
+        <span>Thinking</span>
+        <span className="thinking-dots" aria-hidden="true">
+          <span>.</span>
+          <span>.</span>
+          <span>.</span>
+        </span>
+      </p>
+      {detail.trim().length > 0 ? (
+        <MarkdownMessage
+          text={detail}
+          projectId={projectId}
+          taskId={taskId}
+          onCodeLinkResult={onCodeLinkResult}
+          onCodeLinkError={onCodeLinkError}
+          onTraceChanged={onTraceChanged}
+        />
+      ) : null}
+    </>
+  )
 }
 
 function MarkdownMessage({
@@ -503,7 +580,7 @@ function renderInlineMarkdown(
 
 interface ThinkingSummary {
   toolCalls: number
-  messages: number
+  llmCalls: number
   steps: number
   workedFor: string
   items: ThinkingItem[]
@@ -518,7 +595,13 @@ interface ThinkingItem {
   details: string[]
   status: ToolTraceEvent['status']
   duration: string
+  progressive: boolean
 }
+
+const THINKING_REVEAL_DELAY_MS = 120
+const THINKING_TEXT_TICK_MS = 40
+const THINKING_TEXT_CHARS_PER_SECOND = 120
+const THINKING_MAX_VISIBLE_ITEMS = 50
 
 function ThinkingPanel({
   summary,
@@ -528,6 +611,44 @@ function ThinkingPanel({
   defaultOpen: boolean
 }) {
   const [open, setOpen] = useState(defaultOpen)
+  const [visibleItemCount, setVisibleItemCount] = useState(() =>
+    defaultOpen ? Math.min(1, summary.items.length) : summary.items.length,
+  )
+  const visibleItems = summary.items.slice(0, visibleItemCount)
+  const latestVisibleItemId = visibleItems.at(-1)?.id ?? null
+
+  useEffect(() => {
+    setOpen(defaultOpen)
+  }, [defaultOpen])
+
+  useEffect(() => {
+    setVisibleItemCount((current) => {
+      if (!defaultOpen) {
+        return summary.items.length
+      }
+      if (summary.items.length === 0) {
+        return 0
+      }
+      if (current === 0) {
+        return 1
+      }
+      return Math.min(current, summary.items.length)
+    })
+  }, [defaultOpen, summary.items.length])
+
+  useEffect(() => {
+    if (!defaultOpen || visibleItemCount >= summary.items.length) {
+      return undefined
+    }
+
+    const timerId = window.setTimeout(() => {
+      setVisibleItemCount((current) => Math.min(current + 1, summary.items.length))
+    }, THINKING_REVEAL_DELAY_MS)
+
+    return () => {
+      window.clearTimeout(timerId)
+    }
+  }, [defaultOpen, summary.items.length, visibleItemCount])
 
   return (
     <section className={open ? 'message-thinking open' : 'message-thinking'}>
@@ -548,32 +669,13 @@ function ThinkingPanel({
       </button>
       {open ? (
         <div className="thinking-details">
-          <div className="thinking-label">
-            Thinking
-            <span>
-              {summary.toolCalls} tool calls, {summary.messages} messages,{' '}
-              {summary.steps} trace steps
-            </span>
-          </div>
           <div className="thinking-list">
-            {summary.items.map((item) => (
-              <div key={item.id} className={`thinking-item ${item.status}`}>
-                <ThinkingIcon kind={item.kind} />
-                <div className="thinking-item-body">
-                  <div className="thinking-item-main">
-                    <span>{item.text}</span>
-                    {item.detail ? <code>{item.detail}</code> : null}
-                    <small>{item.duration || item.status}</small>
-                  </div>
-                  {item.details.length > 0 ? (
-                    <div className="thinking-item-details">
-                      {item.details.map((detail, index) => (
-                        <p key={index}>{detail}</p>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              </div>
+            {visibleItems.map((item) => (
+              <ThinkingItemRow
+                key={item.id}
+                item={item}
+                autoOpen={defaultOpen && item.id === latestVisibleItemId}
+              />
             ))}
             {summary.omitted > 0 ? (
               <div className="thinking-more">
@@ -585,6 +687,57 @@ function ThinkingPanel({
       ) : null}
     </section>
   )
+}
+
+function ThinkingItemRow({
+  item,
+  autoOpen,
+}: {
+  item: ThinkingItem
+  autoOpen: boolean
+}) {
+  const displayText = useProgressiveText(item.text, item.progressive && autoOpen)
+
+  return (
+    <div className={`thinking-item ${item.status} ${item.kind}`}>
+      <ThinkingIcon kind={item.kind} />
+      <div className="thinking-item-body">
+        <div className="thinking-item-main">
+          <span>{displayText}</span>
+          {item.detail ? <code>{item.detail}</code> : null}
+          <small>{item.duration || item.status}</small>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function useProgressiveText(text: string, enabled: boolean): string {
+  const [visibleChars, setVisibleChars] = useState(text.length)
+
+  useEffect(() => {
+    setVisibleChars(enabled ? 0 : text.length)
+  }, [enabled, text])
+
+  useEffect(() => {
+    if (!enabled || visibleChars >= text.length) {
+      return undefined
+    }
+
+    const charsPerTick = Math.max(
+      1,
+      Math.round((THINKING_TEXT_CHARS_PER_SECOND * THINKING_TEXT_TICK_MS) / 1000),
+    )
+    const timerId = window.setTimeout(() => {
+      setVisibleChars((current) => Math.min(text.length, current + charsPerTick))
+    }, THINKING_TEXT_TICK_MS)
+
+    return () => {
+      window.clearTimeout(timerId)
+    }
+  }, [enabled, text, visibleChars])
+
+  return text.slice(0, visibleChars)
 }
 
 function ThinkingIcon({ kind }: { kind: ThinkingItem['kind'] }) {
@@ -603,12 +756,18 @@ function ThinkingIcon({ kind }: { kind: ThinkingItem['kind'] }) {
   return <Bot size={13} aria-hidden="true" />
 }
 
-function createThinkingSummary(events: ToolTraceEvent[]): ThinkingSummary | null {
+function createThinkingSummary(
+  events: ToolTraceEvent[],
+  options: { nowMs: number; running: boolean },
+): ThinkingSummary | null {
   if (events.length === 0) {
     return null
   }
 
-  const visibleEvents = events.filter(isVisibleThinkingEvent)
+  const visibleEvents = events.filter(
+    (event, index) =>
+      isVisibleThinkingEvent(event) && !isSupersededToolCall(event, events, index),
+  )
   const items = visibleEvents
     .map(createThinkingItem)
     .filter((item): item is ThinkingItem => item !== null)
@@ -619,11 +778,11 @@ function createThinkingSummary(events: ToolTraceEvent[]): ThinkingSummary | null
 
   return {
     toolCalls: inferToolCallCount(events),
-    messages: inferMessageCount(events),
+    llmCalls: inferLlmCallCount(visibleEvents),
     steps: visibleEvents.length,
-    workedFor: formatWorkedFor(events),
-    items: items.slice(0, 50),
-    omitted: Math.max(0, items.length - 50),
+    workedFor: formatWorkedFor(events, options.nowMs, options.running),
+    items: items.slice(0, THINKING_MAX_VISIBLE_ITEMS),
+    omitted: Math.max(0, items.length - THINKING_MAX_VISIBLE_ITEMS),
   }
 }
 
@@ -631,95 +790,58 @@ function createThinkingItem(event: ToolTraceEvent): ThinkingItem | null {
   const input = asRecord(event.input)
   const argumentsValue = asRecord(input.arguments)
   const toolName = event.toolName ?? stringValue(input.toolName)
-  const base = baseThinkingItem(event, toolName)
 
-  if (toolName === 'search_content') {
+  if (event.type === 'llm_response' || event.type === 'model_message') {
+    const thinkingText = modelThinkingContent(input, asRecord(event.output), event)
+    if (!thinkingText) {
+      return null
+    }
     return {
-      ...base,
       id: event.id,
-      kind: 'search',
-      text: event.status === 'failed' ? 'Search failed' : 'Searched content',
-      detail: compactToolDetail([
-        stringValue(argumentsValue.query),
-        stringValue(argumentsValue.root),
-        stringValue(argumentsValue.file_glob),
-      ]),
+      kind: 'model',
+      text: thinkingText,
+      detail: modelLabel(input, asRecord(event.output)),
       details: thinkingDetailsForEvent(event, toolName, argumentsValue),
+      status: event.status,
+      duration: formatDuration(event.durationMs),
+      progressive: true,
     }
   }
 
-  if (toolName === 'search_file') {
-    return {
-      ...base,
-      id: event.id,
-      kind: 'search',
-      text: event.status === 'failed' ? 'File search failed' : 'Searched files',
-      detail: compactToolDetail([
-        stringValue(argumentsValue.pattern),
-        stringValue(argumentsValue.root),
-      ]),
-      details: thinkingDetailsForEvent(event, toolName, argumentsValue),
-    }
+  if (event.type === 'llm_request' || event.type === 'final_response') {
+    return null
   }
 
-  if (toolName === 'list_dir') {
-    return {
-      ...base,
-      id: event.id,
-      kind: 'list',
-      text: event.status === 'failed' ? 'List directory failed' : 'Listed directory',
-      detail: stringValue(argumentsValue.path),
-      details: thinkingDetailsForEvent(event, toolName, argumentsValue),
-    }
-  }
-
-  if (toolName === 'read_file') {
-    return {
-      ...base,
-      id: event.id,
-      kind: 'read',
-      text: event.status === 'failed' ? 'Read failed' : 'Read file',
-      detail: lineRangeDetail(
-        stringValue(argumentsValue.path),
-        argumentsValue.start_line,
-        argumentsValue.end_line,
-      ),
-      details: thinkingDetailsForEvent(event, toolName, argumentsValue),
-    }
-  }
-
-  if (toolName === 'get_file_context') {
-    return {
-      ...base,
-      id: event.id,
-      kind: 'read',
-      text: event.status === 'failed' ? 'Context read failed' : 'Read context',
-      detail: lineRangeDetail(
-        stringValue(argumentsValue.path),
-        argumentsValue.line,
-        undefined,
-      ),
-      details: thinkingDetailsForEvent(event, toolName, argumentsValue),
-    }
-  }
-
-  return base
+  return baseThinkingItem(event, toolName)
 }
 
 function isVisibleThinkingEvent(event: ToolTraceEvent): boolean {
-  if (event.toolName === 'chat_completion') {
-    return event.type === 'llm_request' || event.type === 'llm_response'
+  if (event.type === 'llm_response' || event.type === 'model_message') {
+    return Boolean(modelThinkingContent(asRecord(event.input), asRecord(event.output), event))
   }
-  return [
-    'llm_request',
-    'llm_response',
-    'tool_call',
-    'tool_result',
-    'model_message',
-    'final_response',
-    'system_event',
-    'error',
-  ].includes(event.type)
+  if (event.type === 'tool_call' || event.type === 'tool_result' || event.type === 'error') {
+    return true
+  }
+  return false
+}
+
+function isSupersededToolCall(
+  event: ToolTraceEvent,
+  events: ToolTraceEvent[],
+  index: number,
+): boolean {
+  if (event.type !== 'tool_call') {
+    return false
+  }
+
+  const toolName = event.toolName ?? stringValue(asRecord(event.input).toolName)
+  const argumentsKey = stableJson(asRecord(asRecord(event.input).arguments))
+  return events.slice(index + 1).some((later) => {
+    if (later.toolName !== toolName || !['tool_result', 'error'].includes(later.type)) {
+      return false
+    }
+    return stableJson(asRecord(asRecord(later.input).arguments)) === argumentsKey
+  })
 }
 
 function baseThinkingItem(
@@ -727,7 +849,7 @@ function baseThinkingItem(
   toolName: string,
 ): ThinkingItem {
   const duration = formatDuration(event.durationMs)
-  const detail = defaultThinkingDetail(event, toolName)
+  const detail = defaultThinkingDetail(event)
   return {
     id: event.id,
     kind: thinkingKind(event, toolName),
@@ -736,6 +858,7 @@ function baseThinkingItem(
     details: thinkingDetailsForEvent(event, toolName, asRecord(asRecord(event.input).arguments)),
     status: event.status,
     duration,
+    progressive: false,
   }
 }
 
@@ -747,6 +870,12 @@ function thinkingKind(
     return 'error'
   }
   if (event.type === 'llm_request' || event.type === 'llm_response') {
+    return 'model'
+  }
+  if (event.type === 'system_event') {
+    return 'message'
+  }
+  if (toolName === 'chat_completion') {
     return 'model'
   }
   if (event.type === 'model_message' || event.type === 'final_response') {
@@ -765,33 +894,19 @@ function thinkingKind(
 }
 
 function defaultThinkingText(event: ToolTraceEvent, toolName: string): string {
-  if (event.type === 'llm_request') {
-    return 'Sent model request'
-  }
-  if (event.type === 'llm_response') {
-    return event.status === 'failed' ? 'Model response failed' : 'Received model response'
-  }
-  if (event.type === 'tool_call') {
-    return 'Prepared tool call'
-  }
-  if (event.type === 'tool_result') {
-    return event.status === 'failed' ? 'Tool failed' : 'Tool returned result'
-  }
-  if (event.type === 'model_message') {
-    return 'Read model message'
-  }
-  if (event.type === 'final_response') {
-    return 'Composed final response'
+  if (toolName) {
+    return toolName
   }
   if (event.type === 'error') {
-    return 'Trace error'
+    return event.title || 'error'
   }
-  return event.title || toolName || 'Trace step'
+  return event.title || event.type
 }
 
-function defaultThinkingDetail(event: ToolTraceEvent, toolName: string): string {
-  if (toolName && toolName !== 'chat_completion') {
-    return toolName
+function defaultThinkingDetail(event: ToolTraceEvent): string {
+  if (event.type === 'tool_call' || event.type === 'tool_result' || event.type === 'error') {
+    const argumentsValue = asRecord(asRecord(event.input).arguments)
+    return formatToolArguments(argumentsValue)
   }
   const input = asRecord(event.input)
   const output = asRecord(event.output)
@@ -804,6 +919,32 @@ function defaultThinkingDetail(event: ToolTraceEvent, toolName: string): string 
     response.model,
   ])
   return model || event.title
+}
+
+function formatToolArguments(argumentsValue: Record<string, unknown>): string {
+  if (Object.keys(argumentsValue).length === 0) {
+    return ''
+  }
+
+  const path = stringValue(argumentsValue.path)
+  if (path) {
+    const pathDetail = lineRangeDetail(
+      path,
+      argumentsValue.start_line ?? argumentsValue.line,
+      argumentsValue.end_line,
+    )
+    const rest = Object.fromEntries(
+      Object.entries(argumentsValue).filter(
+        ([key]) => !['path', 'start_line', 'end_line', 'line'].includes(key),
+      ),
+    )
+    return compactToolDetail([
+      pathDetail,
+      Object.keys(rest).length > 0 ? compactJson(rest, 180) : '',
+    ])
+  }
+
+  return compactJson(argumentsValue, 420)
 }
 
 function thinkingDetailsForEvent(
@@ -819,6 +960,7 @@ function thinkingDetailsForEvent(
 
   appendDetail(lines, 'Step', event.title)
   appendDetail(lines, 'Status', event.status)
+  appendToolPerformanceDetail(lines, event, output)
 
   if (event.type === 'llm_request') {
     appendDetail(lines, 'Provider', firstText([input.provider, input.providerType, request.provider]))
@@ -832,7 +974,6 @@ function thinkingDetailsForEvent(
   if (event.type === 'llm_response') {
     appendDetail(lines, 'Model', firstText([output.model, response.model]))
     appendDetail(lines, 'Tokens', tokenUsageDetail(output, response))
-    appendDetail(lines, 'Content', modelResponsePreview(output, response))
     appendDetail(lines, 'Tool calls', String(responseToolCallCount(output, response) || ''))
     return lines
   }
@@ -844,6 +985,13 @@ function thinkingDetailsForEvent(
   }
 
   if (event.type === 'tool_result') {
+    if (toolName === 'chat_completion') {
+      appendDetail(lines, 'Provider', firstText([input.provider, output.provider]))
+      appendDetail(lines, 'Model', firstText([output.model, request.model]))
+      appendDetail(lines, 'Tokens', tokenUsageDetail(output, response))
+      appendDetail(lines, 'Message chars', firstText([output.messageChars]))
+      return lines
+    }
     appendDetail(lines, 'Tool', toolName)
     appendDetail(lines, 'Result', compactText(event.outputSummary ?? extractOutputMessage(output), 260))
     appendDetail(lines, 'Output', compactJson(output, 260))
@@ -877,6 +1025,59 @@ function appendDetail(lines: string[], label: string, value: string): void {
   if (trimmed.length > 0) {
     lines.push(`${label}: ${trimmed}`)
   }
+}
+
+function appendToolPerformanceDetail(
+  lines: string[],
+  event: ToolTraceEvent,
+  output: Record<string, unknown>,
+): void {
+  if (event.type !== 'tool_result' && event.type !== 'error') {
+    return
+  }
+
+  const parts: string[] = []
+  if (typeof event.durationMs === 'number') {
+    parts.push(`duration=${formatDuration(event.durationMs)}`)
+  }
+  appendPerformancePart(parts, 'engine', stringValue(output.engine))
+  appendPerformancePart(parts, 'scannedFiles', numberString(output.scannedFiles))
+  appendPerformancePart(parts, 'count', numberString(output.count))
+  appendPerformancePart(parts, 'totalMatches', numberString(output.totalMatches))
+  appendPerformancePart(parts, 'maxResults', numberString(output.maxResults))
+  appendPerformancePart(parts, 'complete', booleanString(output.complete))
+  appendPerformancePart(parts, 'truncated', booleanString(output.truncated))
+  appendPerformancePart(parts, 'filesPerSecond', toolThroughput(event.durationMs, output.scannedFiles))
+
+  if (parts.length > 0) {
+    appendDetail(lines, 'Performance', parts.join(', '))
+  }
+}
+
+function appendPerformancePart(parts: string[], label: string, value: string): void {
+  if (value) {
+    parts.push(`${label}=${value}`)
+  }
+}
+
+function numberString(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : ''
+}
+
+function booleanString(value: unknown): string {
+  return typeof value === 'boolean' ? String(value) : ''
+}
+
+function toolThroughput(durationMs: number | null, scannedFiles: unknown): string {
+  if (
+    typeof durationMs !== 'number' ||
+    durationMs <= 0 ||
+    typeof scannedFiles !== 'number' ||
+    scannedFiles <= 0
+  ) {
+    return ''
+  }
+  return Math.round((scannedFiles * 1000) / durationMs).toLocaleString()
 }
 
 function firstText(values: unknown[]): string {
@@ -947,21 +1148,6 @@ function messageContentPreview(value: unknown): string {
     return compactText(textParts.join(' '), 220)
   }
   return compactJson(value, 220)
-}
-
-function modelResponsePreview(
-  output: Record<string, unknown>,
-  response: Record<string, unknown>,
-): string {
-  const firstChoice = firstNonEmptyRecord([firstChoiceRecord(response), firstChoiceRecord(output)])
-  const message = asRecord(firstChoice.message)
-  return firstText([
-    message.content,
-    firstChoice.text,
-    response.content,
-    output.content,
-    output.outputSummary,
-  ])
 }
 
 function firstChoiceRecord(record: Record<string, unknown>): Record<string, unknown> {
@@ -1048,6 +1234,69 @@ function modelMessageContent(
   ])
 }
 
+function modelThinkingContent(
+  input: Record<string, unknown>,
+  output: Record<string, unknown>,
+  event: ToolTraceEvent,
+): string {
+  const response = asRecord(output.response)
+  const choice = firstNonEmptyRecord([firstChoiceRecord(response), firstChoiceRecord(output)])
+  const message = asRecord(choice.message)
+  const directThinking = firstRawText([
+    output.reasoning_content,
+    output.reasoningContent,
+    output.reasoning,
+    response.reasoning_content,
+    response.reasoningContent,
+    response.reasoning,
+    message.reasoning_content,
+    message.reasoningContent,
+    message.reasoning,
+  ])
+  if (directThinking) {
+    return normalizeThinkingText(directThinking)
+  }
+
+  const thinkBlock = extractThinkBlock(
+    firstRawText([message.content, output.content, output.message, event.outputSummary]),
+  )
+  if (thinkBlock) {
+    return normalizeThinkingText(thinkBlock)
+  }
+
+  if (event.type === 'model_message') {
+    return normalizeThinkingText(
+      firstRawText([input.content, output.content, output.message, event.outputSummary]),
+    )
+  }
+
+  return ''
+}
+
+function modelLabel(input: Record<string, unknown>, output: Record<string, unknown>): string {
+  const request = asRecord(input.request)
+  const response = asRecord(output.response)
+  return firstText([input.model, request.model, output.model, response.model])
+}
+
+function firstRawText(values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value
+    }
+  }
+  return ''
+}
+
+function extractThinkBlock(value: string): string {
+  const match = value.match(/<think>([\s\S]*?)<\/think>/i)
+  return match?.[1] ?? ''
+}
+
+function normalizeThinkingText(value: string): string {
+  return maskSensitiveText(value.replace(/\\n/g, '\n').replace(/\r\n/g, '\n').trim())
+}
+
 function firstNonEmptyRecord(records: Array<Record<string, unknown>>): Record<string, unknown> {
   return records.find((record) => Object.keys(record).length > 0) ?? {}
 }
@@ -1060,6 +1309,14 @@ function compactJson(value: unknown, maxLength: number): string {
     return compactText(JSON.stringify(value), maxLength)
   } catch {
     return compactText(String(value), maxLength)
+  }
+}
+
+function stableJson(value: unknown): string {
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
   }
 }
 
@@ -1091,21 +1348,21 @@ function formatDuration(value: number | null): string {
   return `${Math.max(0, Math.round(value))} ms`
 }
 
-function inferMessageCount(events: ToolTraceEvent[]): number {
-  const counts = events
-    .map((event) => {
-      const input = asRecord(event.input)
-      const request = asRecord(input.request)
-      const directMessages = Array.isArray(input.messages) ? input.messages.length : 0
-      const nestedMessages = Array.isArray(request.messages) ? request.messages.length : 0
-      return Math.max(directMessages, nestedMessages)
-    })
-    .filter((count) => count > 0)
+function inferLlmCallCount(events: ToolTraceEvent[]): number {
+  const completedCalls = events.filter(
+    (event) =>
+      event.type === 'llm_response' ||
+      (event.type === 'tool_result' && event.toolName === 'chat_completion'),
+  ).length
 
-  return counts.length > 0 ? Math.max(...counts) : events.filter((event) => event.type === 'llm_response').length
+  return completedCalls || events.filter((event) => event.type === 'llm_request').length
 }
 
-function formatWorkedFor(events: ToolTraceEvent[]): string {
+function formatWorkedFor(
+  events: ToolTraceEvent[],
+  nowMs: number,
+  running: boolean,
+): string {
   const starts = events
     .map((event) => Date.parse(event.startedAt))
     .filter((value) => Number.isFinite(value))
@@ -1116,13 +1373,25 @@ function formatWorkedFor(events: ToolTraceEvent[]): string {
     return ''
   }
 
-  const durationSeconds = Math.max(1, Math.round((Math.max(...ends) - Math.min(...starts)) / 1000))
+  const startMs = Math.min(...starts)
+  const endMs = running ? Math.max(nowMs, ...ends) : Math.max(...ends)
+  const durationSeconds = Math.max(1, Math.round((endMs - startMs) / 1000))
   const minutes = Math.floor(durationSeconds / 60)
   const seconds = durationSeconds % 60
   if (minutes > 0) {
     return `${minutes}m ${seconds}s`
   }
   return `${seconds}s`
+}
+
+function hasTerminalTraceEvent(events: ToolTraceEvent[]): boolean {
+  if (events.some((event) => event.status === 'failed' || event.type === 'error')) {
+    return true
+  }
+  if (events.some((event) => event.type === 'final_response')) {
+    return true
+  }
+  return false
 }
 
 function compactToolDetail(parts: string[]): string {
