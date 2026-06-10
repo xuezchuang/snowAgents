@@ -5,6 +5,7 @@ import { normalizeDisplayPath } from '../utils/path'
 interface VisualStudioSettingsProps {
   devenvPath: string
   dataDir: string
+  configPath: string
   onChange: (path: string) => void
   onError: (message: string) => void
 }
@@ -12,6 +13,7 @@ interface VisualStudioSettingsProps {
 function VisualStudioSettings({
   devenvPath,
   dataDir,
+  configPath,
   onChange,
   onError,
 }: VisualStudioSettingsProps) {
@@ -51,6 +53,10 @@ function VisualStudioSettings({
       <label>
         data directory
         <input value={normalizeDisplayPath(dataDir)} readOnly />
+      </label>
+      <label>
+        config file
+        <input value={normalizeDisplayPath(configPath)} readOnly />
       </label>
     </section>
   )

@@ -30,7 +30,7 @@ function ProjectForm({ project, onSave, onCancel, onError }: ProjectFormProps) {
       ? {
           name: project.name,
           repoRoot: normalizeDisplayPath(project.repoRoot),
-          solutionPath: normalizeDisplayPath(project.solutionPath),
+          solutionPath: project.solutionPath ? normalizeDisplayPath(project.solutionPath) : '',
         }
       : blankProjectForm,
   )
@@ -43,7 +43,7 @@ function ProjectForm({ project, onSave, onCancel, onError }: ProjectFormProps) {
       await onSave({
         name: form.name.trim(),
         repoRoot: form.repoRoot.trim(),
-        solutionPath: form.solutionPath.trim(),
+        solutionPath: form.solutionPath.trim() || null,
         uprojectPath: null,
         buildCommand: null,
       })
@@ -107,7 +107,7 @@ function ProjectForm({ project, onSave, onCancel, onError }: ProjectFormProps) {
           </div>
         </label>
         <label className="span-2">
-          solutionPath
+          solutionPath (optional)
           <div className="field-with-button">
             <input
               value={form.solutionPath}
@@ -115,7 +115,6 @@ function ProjectForm({ project, onSave, onCancel, onError }: ProjectFormProps) {
                 setForm({ ...form, solutionPath: event.target.value })
               }
               placeholder="D:\\Work\\Game\\Game.sln"
-              required
             />
             <button type="button" className="secondary-button" onClick={pickSolution}>
               <FolderOpen size={16} aria-hidden="true" />

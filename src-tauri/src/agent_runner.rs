@@ -27,6 +27,8 @@ pub struct AgentRunInput {
     pub credential_id: Option<String>,
     pub model_id: Option<String>,
     #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
     pub allow_shell: bool,
     #[serde(default)]
     pub assume_yes: bool,
@@ -57,6 +59,7 @@ struct SelectedModel {
     provider: ProviderConfig,
     credential: Option<ProviderCredential>,
     model_id: String,
+    reasoning_effort: Option<String>,
 }
 
 impl SelectedModel {
@@ -228,6 +231,7 @@ pub async fn run_agent(
         input.provider_id.as_deref(),
         input.credential_id.as_deref(),
         input.model_id.as_deref(),
+        input.reasoning_effort.as_deref(),
     ) {
         Ok(selected) => selected,
         Err(error) => {
@@ -241,6 +245,7 @@ pub async fn run_agent(
                         "providerId": input.provider_id,
                         "credentialId": input.credential_id,
                         "modelId": input.model_id,
+                        "reasoningEffort": input.reasoning_effort,
                     })),
                     &error,
                 ),
@@ -369,7 +374,7 @@ pub async fn run_tool_call_test(
     );
     step_index += 1;
 
-    let selected = match select_model(settings, provider_id, credential_id, model_id) {
+    let selected = match select_model(settings, provider_id, credential_id, model_id, None) {
         Ok(selected) => selected,
         Err(error) => {
             push_trace(
@@ -982,9 +987,10 @@ async fn record_codex_cli_completion(
                 "type": selected.provider.provider_type,
                 "workspaceRoot": project.repo_root,
                 "sandbox": "workspace-write",
-                "model": selected.model_id,
-                "modelOverride": model_override,
-                "prompt": prompt.clone(),
+            "model": selected.model_id,
+            "modelOverride": model_override,
+            "reasoningEffort": selected.reasoning_effort,
+            "prompt": prompt.clone(),
             })),
             None,
             Some("codex exec --json".to_string()),
@@ -995,7 +1001,14 @@ async fn record_codex_cli_completion(
     );
     *step_index += 1;
 
-    match codex_cli_runner::execute(&project.repo_root, &prompt, model_override).await {
+    match codex_cli_runner::execute(
+        &project.repo_root,
+        &prompt,
+        model_override,
+        selected.reasoning_effort.as_deref(),
+    )
+    .await
+    {
         Ok(execution) => {
             let usage = codex_cli_runner::token_usage_from_codex_usage(execution.usage.as_ref());
             let duration_ms = execution.duration_ms;
@@ -1156,6 +1169,7 @@ fn select_model(
     provider_id: Option<&str>,
     credential_id: Option<&str>,
     model_id: Option<&str>,
+    reasoning_effort: Option<&str>,
 ) -> Result<SelectedModel, String> {
     let provider = if let Some(provider_id) = provider_id.filter(|value| !value.trim().is_empty()) {
         let requested_provider = settings
@@ -1201,6 +1215,7 @@ fn select_model(
                 .find(|model| model_is_enabled_for_credential(model, credential.as_ref()))
                 .map(|model| model.id.clone())
         })
+        .or_else(|| default_model_without_model_list(&provider))
         .ok_or_else(|| {
             format!(
                 "No enabled model for provider {}. Enable at least one model in Settings first.",
@@ -1216,7 +1231,27 @@ fn select_model(
         provider,
         credential,
         model_id,
+        reasoning_effort: normalize_reasoning_effort(reasoning_effort),
     })
+}
+
+fn normalize_reasoning_effort(reasoning_effort: Option<&str>) -> Option<String> {
+    let value = reasoning_effort?.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("default") {
+        return None;
+    }
+    Some(value.to_ascii_lowercase())
+}
+
+fn default_model_without_model_list(provider: &ProviderConfig) -> Option<String> {
+    if !provider.models.is_empty() {
+        return None;
+    }
+    if provider.provider_type != CODEX_CLI_PROVIDER_TYPE && provider.provider_type != "ollama" {
+        return None;
+    }
+    let default_model = provider.default_model.trim();
+    (!default_model.is_empty()).then(|| default_model.to_string())
 }
 
 fn model_is_enabled_for_credential(
@@ -1325,6 +1360,10 @@ fn build_chat_completion_request(
         "temperature": selected.provider.temperature,
         "stream": uses_streaming,
     });
+
+    if let Some(reasoning_effort) = selected.reasoning_effort.as_deref() {
+        request_body["reasoning_effort"] = json!(reasoning_effort);
+    }
 
     if let Some(tools) = tools {
         request_body["tools"] = json!(tools);
@@ -2381,6 +2420,7 @@ mod tests {
             provider_id: Some("provider".to_string()),
             credential_id: Some("default".to_string()),
             model_id: Some("test-model".to_string()),
+            reasoning_effort: None,
             allow_shell: false,
             assume_yes: false,
             cli_mode: false,
@@ -2435,6 +2475,7 @@ mod tests {
             provider_id: Some("provider".to_string()),
             credential_id: Some("default".to_string()),
             model_id: Some("test-model".to_string()),
+            reasoning_effort: None,
             allow_shell: false,
             assume_yes: false,
             cli_mode: false,
@@ -2506,6 +2547,7 @@ mod tests {
             provider_id: Some("provider".to_string()),
             credential_id: Some("default".to_string()),
             model_id: Some("test-model".to_string()),
+            reasoning_effort: None,
             allow_shell: false,
             assume_yes: false,
             cli_mode: false,
@@ -2607,6 +2649,7 @@ mod tests {
                 api_key: "test-key".to_string(),
             }),
             model_id: "test-model".to_string(),
+            reasoning_effort: None,
         }
     }
 
@@ -2615,7 +2658,7 @@ mod tests {
             id: "project".to_string(),
             name: "Project".to_string(),
             repo_root: "D:\\code\\snowAgents".to_string(),
-            solution_path: "D:\\code\\snowAgents\\Project.sln".to_string(),
+            solution_path: Some("D:\\code\\snowAgents\\Project.sln".to_string()),
             uproject_path: None,
             build_command: None,
             vs_process_id: None,

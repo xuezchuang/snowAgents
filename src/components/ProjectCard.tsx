@@ -28,7 +28,9 @@ function ProjectCard({
         <div className="project-card-copy">
           <h3>{project.name}</h3>
           <p className="path-line">{normalizeDisplayPath(project.repoRoot)}</p>
-          <p className="path-line">{normalizeDisplayPath(project.solutionPath)}</p>
+          <p className="path-line">
+            {project.solutionPath ? normalizeDisplayPath(project.solutionPath) : 'No solution mapped'}
+          </p>
         </div>
         <span className={`vs-badge ${vsStatusClass(project)}`}>
           {vsStatus(project)}
@@ -39,7 +41,8 @@ function ProjectCard({
           type="button"
           className="secondary-button"
           onClick={() => onOpenVisualStudio(project)}
-          disabled={busy}
+          disabled={busy || !project.solutionPath}
+          title={project.solutionPath ? 'Open Visual Studio' : 'Map a solutionPath first'}
         >
           <MonitorUp size={16} aria-hidden="true" />
           Open VS

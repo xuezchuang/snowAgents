@@ -2,7 +2,7 @@ export interface ProjectSession {
   id: string
   name: string
   repoRoot: string
-  solutionPath: string
+  solutionPath: string | null
   uprojectPath: string | null
   buildCommand: string | null
   vsProcessId: number | null
@@ -14,7 +14,7 @@ export interface ProjectSession {
 export interface ProjectInput {
   name: string
   repoRoot: string
-  solutionPath: string
+  solutionPath: string | null
   uprojectPath: string | null
   buildCommand: string | null
 }

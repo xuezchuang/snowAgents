@@ -232,7 +232,7 @@ mod tests {
             id: "project".to_string(),
             name: "Project".to_string(),
             repo_root: repo_root.clone(),
-            solution_path: format!("{repo_root}\\Project.sln"),
+            solution_path: Some(format!("{repo_root}\\Project.sln")),
             uproject_path: None,
             build_command: None,
             vs_process_id: None,

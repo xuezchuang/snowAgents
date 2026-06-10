@@ -34,9 +34,10 @@ pub async fn execute(
     workspace_root: &str,
     prompt: &str,
     model_id: Option<&str>,
+    reasoning_effort: Option<&str>,
 ) -> Result<CodexCliExecution, String> {
     let executable = resolve_codex_cli_path()?;
-    let args = codex_exec_args(workspace_root, model_id);
+    let args = codex_exec_args(workspace_root, model_id, reasoning_effort);
     let workspace_root = workspace_root.to_string();
     let prompt = prompt.to_string();
 
@@ -155,7 +156,11 @@ where
     })
 }
 
-fn codex_exec_args(workspace_root: &str, model_id: Option<&str>) -> Vec<String> {
+fn codex_exec_args(
+    workspace_root: &str,
+    model_id: Option<&str>,
+    reasoning_effort: Option<&str>,
+) -> Vec<String> {
     let mut args = vec![
         "exec".to_string(),
         "--json".to_string(),
@@ -168,6 +173,10 @@ fn codex_exec_args(workspace_root: &str, model_id: Option<&str>) -> Vec<String> 
     if let Some(model_id) = model_id.filter(|value| !value.trim().is_empty()) {
         args.push("--model".to_string());
         args.push(model_id.to_string());
+    }
+    if let Some(reasoning_effort) = reasoning_effort.filter(|value| !value.trim().is_empty()) {
+        args.push("--config".to_string());
+        args.push(format!("model_reasoning_effort=\"{reasoning_effort}\""));
     }
     args.push("-".to_string());
     args
@@ -339,7 +348,7 @@ mod tests {
 
     #[test]
     fn codex_exec_args_use_stdin_prompt() {
-        let args = codex_exec_args("D:\\code\\snowAgents", Some("gpt-5.5"));
+        let args = codex_exec_args("D:\\code\\snowAgents", Some("gpt-5.5"), Some("high"));
 
         assert!(args.contains(&"--json".to_string()));
         assert!(args.contains(&"--ephemeral".to_string()));
@@ -347,5 +356,8 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|pair| pair[0] == "--model" && pair[1] == "gpt-5.5"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--config" && pair[1] == "model_reasoning_effort=\"high\""));
     }
 }

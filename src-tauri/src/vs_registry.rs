@@ -16,6 +16,8 @@ pub const CODEBUDDY_OPENAI_BASE_URL: &str = "https://copilot.tencent.com/v2";
 pub struct AppSettings {
     pub devenv_path: Option<String>,
     pub data_dir: String,
+    #[serde(default)]
+    pub config_path: String,
     #[serde(default = "default_provider_notes")]
     pub provider_notes: String,
     #[serde(default = "default_ui_preferences")]
@@ -29,6 +31,7 @@ impl Default for AppSettings {
         Self {
             devenv_path: None,
             data_dir: String::new(),
+            config_path: String::new(),
             provider_notes: default_provider_notes(),
             ui_preferences: default_ui_preferences(),
             providers: default_providers(),
@@ -115,29 +118,41 @@ pub struct SettingsStore {
 }
 
 impl SettingsStore {
-    pub fn load(path: PathBuf, data_dir: String) -> Result<Self, String> {
-        let mut settings = if path.exists() {
-            let text = fs::read_to_string(&path)
-                .map_err(|error| format!("JSON 设置读取失败 {}: {error}", path.display()))?;
-            serde_json::from_str::<AppSettings>(&text)
-                .map_err(|error| format!("JSON 设置解析失败 {}: {error}", path.display()))?
+    pub fn load(
+        path: PathBuf,
+        data_dir: String,
+        legacy_path: Option<PathBuf>,
+        codebuddy_models_path: Option<PathBuf>,
+    ) -> Result<Self, String> {
+        let (mut settings, should_save_initial) = if path.exists() {
+            (read_app_settings(&path)?, false)
+        } else if let Some(legacy_path) = legacy_path.filter(|path| path.exists()) {
+            (read_app_settings(&legacy_path)?, true)
+        } else if let Some(imported) =
+            codebuddy_models_path.as_deref().and_then(import_codebuddy_models)
+        {
+            let mut settings = AppSettings::default();
+            settings.providers = imported;
+            (settings, true)
         } else {
-            AppSettings::default()
+            (AppSettings::default(), true)
         };
         settings.data_dir = normalize_display_path(&data_dir);
+        settings.config_path = normalize_display_path(&path.to_string_lossy());
         let normalized_providers = normalize_providers(settings.providers.clone());
         let should_save_providers = normalized_providers != settings.providers;
         settings.providers = normalized_providers;
 
         let mut store = Self { path, settings };
+        let mut should_save_settings = should_save_initial || should_save_providers;
         if let Some(devenv_path) = store.settings.devenv_path.as_mut() {
             let normalized = normalize_display_path(devenv_path);
             if normalized != *devenv_path {
                 *devenv_path = normalized;
-                store.save()?;
+                should_save_settings = true;
             }
         }
-        if should_save_providers {
+        if should_save_settings {
             store.save()?;
         }
         Ok(store)
@@ -182,6 +197,189 @@ impl SettingsStore {
             .map_err(|error| format!("JSON 设置序列化失败: {error}"))?;
         fs::write(&self.path, text)
             .map_err(|error| format!("JSON 设置写入失败 {}: {error}", self.path.display()))
+    }
+}
+
+fn read_app_settings(path: &Path) -> Result<AppSettings, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("JSON 设置读取失败 {}: {error}", path.display()))?;
+    serde_json::from_str::<AppSettings>(&text)
+        .map_err(|error| format!("JSON 设置解析失败 {}: {error}", path.display()))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodeBuddyModelsFile {
+    #[serde(default)]
+    models: Vec<CodeBuddyModelConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodeBuddyModelConfig {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    vendor: String,
+    #[serde(default)]
+    api_key: String,
+    url: String,
+    #[serde(default)]
+    temperature: Option<f64>,
+    #[serde(default)]
+    supports_tool_call: Option<bool>,
+}
+
+struct CodeBuddyProviderGroup {
+    base_url: String,
+    name: String,
+    temperature: f64,
+    supports_tool_call: Option<bool>,
+    credentials: Vec<ProviderCredential>,
+    models: Vec<ProviderModel>,
+}
+
+fn import_codebuddy_models(path: &Path) -> Option<Vec<ProviderConfig>> {
+    let text = fs::read_to_string(path).ok()?;
+    let parsed = serde_json::from_str::<CodeBuddyModelsFile>(&text).ok()?;
+    let mut groups: Vec<CodeBuddyProviderGroup> = Vec::new();
+
+    for model in parsed.models {
+        let base_url = codebuddy_chat_url_to_base_url(&model.url)?;
+        let group_index = groups
+            .iter()
+            .position(|group| group.base_url == base_url)
+            .unwrap_or_else(|| {
+                groups.push(CodeBuddyProviderGroup {
+                    base_url: base_url.clone(),
+                    name: codebuddy_group_name(&model),
+                    temperature: model.temperature.unwrap_or(1.0).clamp(0.0, 2.0),
+                    supports_tool_call: model.supports_tool_call,
+                    credentials: Vec::new(),
+                    models: Vec::new(),
+                });
+                groups.len() - 1
+            });
+        let group = &mut groups[group_index];
+        if group.supports_tool_call.is_none() {
+            group.supports_tool_call = model.supports_tool_call;
+        }
+        let credential_id = codebuddy_credential_id(group, &model);
+        if !group
+            .models
+            .iter()
+            .any(|item| item.id == model.id && item.credential_id == credential_id)
+        {
+            group.models.push(ProviderModel {
+                id: model.id.trim().to_string(),
+                name: model.id.trim().to_string(),
+                enabled: true,
+                credential_id: credential_id.clone(),
+                owned_by: Some(model.vendor.trim().to_string()).filter(|value| !value.is_empty()),
+                created: None,
+            });
+        }
+    }
+
+    let providers = groups
+        .into_iter()
+        .enumerate()
+        .filter(|(_, group)| !group.models.is_empty())
+        .map(|(index, group)| ProviderConfig {
+            id: format!("codebuddy-import-{}", index + 1),
+            provider_type: "openai-compatible".to_string(),
+            name: group.name,
+            enabled: true,
+            base_url: group.base_url,
+            base_url_locked: false,
+            supports_tool_call: group.supports_tool_call,
+            api_key: String::new(),
+            default_credential_id: group
+                .credentials
+                .first()
+                .map(|credential| credential.id.clone())
+                .unwrap_or_default(),
+            default_model: group
+                .models
+                .first()
+                .map(|model| model.id.clone())
+                .unwrap_or_default(),
+            temperature: group.temperature,
+            credentials: group.credentials,
+            models: group.models,
+        })
+        .collect::<Vec<_>>();
+
+    (!providers.is_empty()).then_some(providers)
+}
+
+fn codebuddy_chat_url_to_base_url(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed
+        .strip_suffix("/chat/completions")
+        .map(str::to_string)
+        .or_else(|| Some(trimmed.to_string()))
+}
+
+fn codebuddy_group_name(model: &CodeBuddyModelConfig) -> String {
+    let vendor = model.vendor.trim();
+    let alias = model.name.trim();
+    match (vendor.is_empty(), alias.is_empty()) {
+        (false, false) => format!("CodeBuddy {vendor} {alias}"),
+        (false, true) => format!("CodeBuddy {vendor}"),
+        (true, false) => format!("CodeBuddy {alias}"),
+        (true, true) => "CodeBuddy Imported".to_string(),
+    }
+}
+
+fn codebuddy_credential_id(
+    group: &mut CodeBuddyProviderGroup,
+    model: &CodeBuddyModelConfig,
+) -> String {
+    if let Some(credential) = group
+        .credentials
+        .iter()
+        .find(|credential| credential.api_key == model.api_key)
+    {
+        return credential.id.clone();
+    }
+
+    let base_name = if model.name.trim().is_empty() {
+        format!("key-{}", group.credentials.len() + 1)
+    } else {
+        model.name.trim().to_string()
+    };
+    let id = unique_provider_part_id(&base_name, group.credentials.len() + 1);
+    group.credentials.push(ProviderCredential {
+        id: id.clone(),
+        name: base_name,
+        enabled: true,
+        api_key: model.api_key.trim().to_string(),
+    });
+    id
+}
+
+fn unique_provider_part_id(value: &str, fallback_index: usize) -> String {
+    let id = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if id.is_empty() {
+        format!("key-{fallback_index}")
+    } else {
+        id
     }
 }
 

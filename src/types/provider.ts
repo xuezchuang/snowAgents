@@ -15,6 +15,7 @@ export interface ProviderConfig {
   enabled: boolean
   baseUrl: string
   baseUrlLocked: boolean
+  supportsToolCall?: boolean | null
   apiKey?: string
   defaultCredentialId: string
   defaultModel: string

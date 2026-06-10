@@ -13,7 +13,7 @@ pub struct ProjectSession {
     pub id: String,
     pub name: String,
     pub repo_root: String,
-    pub solution_path: String,
+    pub solution_path: Option<String>,
     pub uproject_path: Option<String>,
     pub build_command: Option<String>,
     pub vs_process_id: Option<u32>,
@@ -27,7 +27,7 @@ pub struct ProjectSession {
 pub struct ProjectInput {
     pub name: String,
     pub repo_root: String,
-    pub solution_path: String,
+    pub solution_path: Option<String>,
     pub uproject_path: Option<String>,
     pub build_command: Option<String>,
 }
@@ -169,7 +169,12 @@ impl ProjectRegistry {
         let target = path_compare_key(solution_path);
         self.projects
             .iter()
-            .find(|project| path_compare_key(&project.solution_path) == target)
+            .find(|project| {
+                project
+                    .solution_path
+                    .as_deref()
+                    .is_some_and(|path| path_compare_key(path) == target)
+            })
             .cloned()
     }
 
@@ -196,7 +201,9 @@ impl ProjectRegistry {
         let mut changed = false;
         for project in &mut self.projects {
             changed |= normalize_field(&mut project.repo_root);
-            changed |= normalize_field(&mut project.solution_path);
+            if let Some(solution_path) = project.solution_path.as_mut() {
+                changed |= normalize_field(solution_path);
+            }
             if let Some(uproject_path) = project.uproject_path.as_mut() {
                 changed |= normalize_field(uproject_path);
             }
@@ -224,8 +231,10 @@ pub fn validate_project_paths(project: &ProjectSession) -> Result<(), String> {
     if !Path::new(&project.repo_root).is_dir() {
         return Err(format!("repoRoot 不存在: {}", project.repo_root));
     }
-    if !Path::new(&project.solution_path).is_file() {
-        return Err(format!("solutionPath 不存在: {}", project.solution_path));
+    if let Some(solution_path) = project.solution_path.as_deref() {
+        if !Path::new(solution_path).is_file() {
+            return Err(format!("solutionPath 不存在: {solution_path}"));
+        }
     }
     if let Some(uproject_path) = project.uproject_path.as_deref() {
         if !uproject_path.trim().is_empty() && !Path::new(uproject_path).is_file() {
@@ -248,7 +257,10 @@ fn normalize_and_validate_input(input: ProjectInput) -> Result<ProjectInput, Str
     }
 
     let repo_root = normalize_existing_dir(&input.repo_root, "repoRoot")?;
-    let solution_path = normalize_existing_file(&input.solution_path, "solutionPath")?;
+    let solution_path = match clean_optional(input.solution_path) {
+        Some(path) => Some(normalize_existing_file(&path, "solutionPath")?),
+        None => None,
+    };
     let uproject_path = match clean_optional(input.uproject_path) {
         Some(path) => Some(normalize_existing_file(&path, "uprojectPath")?),
         None => None,

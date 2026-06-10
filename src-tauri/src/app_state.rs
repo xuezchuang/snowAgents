@@ -29,8 +29,10 @@ impl AppState {
                 data_dir.join("projects.json"),
             )?)),
             settings: Arc::new(Mutex::new(SettingsStore::load(
-                data_dir.join("settings.json"),
+                default_config_dir().join("settings.json"),
                 data_dir.to_string_lossy().to_string(),
+                Some(data_dir.join("settings.json")),
+                codebuddy_models_path(),
             )?)),
             vs_registry: Arc::new(Mutex::new(VsRegistry::default())),
             traces: Arc::new(Mutex::new(ToolTraceStore::default())),
@@ -51,4 +53,14 @@ fn default_data_dir() -> PathBuf {
         .or_else(dirs::data_dir)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     base.join("SnowAgentDesktop")
+}
+
+fn default_config_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        .join(".codeforge")
+}
+
+fn codebuddy_models_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".codebuddy").join("models.json"))
 }

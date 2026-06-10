@@ -1,6 +1,9 @@
 import type { ProjectSession } from '../types/project'
 
 export function vsStatus(project: ProjectSession): string {
+  if (!project.solutionPath) {
+    return 'AI Only'
+  }
   if (project.vsBridgeEndpoint) {
     return 'Bridge Connected'
   }
@@ -11,6 +14,9 @@ export function vsStatus(project: ProjectSession): string {
 }
 
 export function vsStatusClass(project: ProjectSession): string {
+  if (!project.solutionPath) {
+    return 'disconnected'
+  }
   if (project.vsBridgeEndpoint) {
     return 'connected'
   }

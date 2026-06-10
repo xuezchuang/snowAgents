@@ -14,6 +14,14 @@ pub fn open_visual_studio_process(
     settings: &AppSettings,
 ) -> Result<OpenVsProcess, String> {
     validate_project_paths(project)?;
+    let solution_path = project
+        .solution_path
+        .as_deref()
+        .filter(|path| !path.trim().is_empty())
+        .ok_or_else(|| {
+            "This project has no solutionPath. Add a .sln before using Visual Studio bridge features."
+                .to_string()
+        })?;
 
     if let Some(existing) = find_existing_vs_instance(project) {
         return Ok(existing);
@@ -21,12 +29,12 @@ pub fn open_visual_studio_process(
 
     let devenv_path = resolve_devenv_path(settings)?;
     let child = Command::new(&devenv_path)
-        .arg(&project.solution_path)
+        .arg(solution_path)
         .spawn()
         .map_err(|error| {
             format!(
                 "启动 Visual Studio 失败 {} {}: {error}",
-                devenv_path, project.solution_path
+                devenv_path, solution_path
             )
         })?;
 

@@ -52,8 +52,8 @@ function WorkspaceHeader({
             type="button"
             className="icon-button topbar-icon-button"
             onClick={onOpenVisualStudio}
-            disabled={busy}
-            title="Open Visual Studio"
+            disabled={busy || !project.solutionPath}
+            title={project.solutionPath ? 'Open Visual Studio' : 'Map a solutionPath first'}
             aria-label="Open Visual Studio"
           >
             <MonitorUp size={16} aria-hidden="true" />
@@ -134,9 +134,13 @@ function WorkspaceHeader({
             />
             <InfoRow
               label="solutionPath"
-              value={normalizeDisplayPath(project.solutionPath)}
-              copyLabel="Copy solutionPath"
-              onCopy={() => copyValue('solutionPath', project.solutionPath)}
+              value={project.solutionPath ? normalizeDisplayPath(project.solutionPath) : 'None'}
+              copyLabel={project.solutionPath ? 'Copy solutionPath' : undefined}
+              onCopy={
+                project.solutionPath ?
+                  () => copyValue('solutionPath', project.solutionPath ?? '')
+                : undefined
+              }
             />
             <InfoRow
               label="vsProcessId"

@@ -261,11 +261,12 @@ pub fn write_file(workspace_root: &str, arguments: &Value) -> Result<Value, Stri
     let raw_file = required_string(arguments, "file")?;
     let content = required_string(arguments, "content")?;
     let file = resolve_write_path(&workspace, &raw_file)?;
+    let bytes = content.len();
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("create_dir_failed: {}: {error}", parent.display()))?;
     }
-    fs::write(&file, content).map_err(|error| {
+    fs::write(&file, &content).map_err(|error| {
         format!(
             "write_failed: {}: {error}",
             relative_or_display(&workspace, &file)
@@ -273,7 +274,7 @@ pub fn write_file(workspace_root: &str, arguments: &Value) -> Result<Value, Stri
     })?;
     Ok(json!({
         "file": relative_path(&workspace, &file),
-        "bytes": content.len(),
+        "bytes": bytes,
     }))
 }
 

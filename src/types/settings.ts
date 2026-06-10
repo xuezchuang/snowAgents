@@ -14,6 +14,7 @@ export interface UiPreferences {
 export interface AppSettings {
   devenvPath: string | null
   dataDir: string
+  configPath: string
   providerNotes?: string
   uiPreferences: UiPreferences
   providers: ProviderConfig[]

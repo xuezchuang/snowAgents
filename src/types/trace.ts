@@ -52,6 +52,7 @@ export interface AgentRunInput {
   providerId: string | null
   credentialId: string | null
   modelId: string | null
+  reasoningEffort?: string | null
 }
 
 export interface ToolCallTestInput {

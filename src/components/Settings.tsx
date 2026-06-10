@@ -34,7 +34,7 @@ function Settings({
 
   return (
     <SettingsForm
-      key={settings.dataDir}
+      key={`${settings.dataDir}:${settings.configPath}`}
       settings={settings}
       providers={providers}
       onSettingsChanged={onSettingsChanged}
@@ -135,6 +135,7 @@ function SettingsForm({
           <VisualStudioSettings
             devenvPath={devenvPath}
             dataDir={settings.dataDir}
+            configPath={settings.configPath}
             onChange={setDevenvPath}
             onError={onError}
           />
