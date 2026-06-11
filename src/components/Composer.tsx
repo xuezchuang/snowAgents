@@ -10,8 +10,9 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, ClipboardEvent, KeyboardEvent } from 'react'
 import type { ProviderConfig } from '../types/provider'
+import type { ModelReasoningMode } from '../types/provider'
 import type { MessageAttachment } from '../types/task'
-import { getSelectableModels } from '../utils/providerModels'
+import { getSelectableModels, type SelectableModel } from '../utils/providerModels'
 
 interface ComposerProps {
   providers: ProviderConfig[]
@@ -20,9 +21,20 @@ interface ComposerProps {
   onChange: (value: string) => void
   onSend: (
     prompt: string,
-    selection: { providerId: string | null; credentialId: string | null; modelId: string | null },
+    selection: {
+      providerId: string | null
+      credentialId: string | null
+      modelId: string | null
+      reasoningEffort: string | null
+    },
     attachments: MessageAttachment[],
   ) => void
+}
+
+type ReasoningChoice = {
+  value: string
+  label: string
+  description: string
 }
 
 function Composer({
@@ -34,9 +46,10 @@ function Composer({
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const modelPickerRef = useRef<HTMLDivElement>(null)
+  const pickerRef = useRef<HTMLDivElement>(null)
   const [selectedModelId, setSelectedModelId] = useState('')
-  const [modelMenuOpen, setModelMenuOpen] = useState(false)
+  const [selectedReasoning, setSelectedReasoning] = useState('')
+  const [pickerOpen, setPickerOpen] = useState(false)
   const [attachments, setAttachments] = useState<MessageAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
   const selectableModels = useMemo(() => getSelectableModels(providers), [providers])
@@ -44,9 +57,40 @@ function Composer({
     selectableModels.find((model) => model.id === selectedModelId) ??
     selectableModels[0] ??
     null
-  const selectedModelTriggerLabel = selectedModel?.modelName
-  const canSend =
-    (value.trim().length > 0 || attachments.length > 0) && !busy && selectedModel !== null
+  const selectedModelReasoningMode = useMemo(
+    () => resolveReasoningMode(selectedModel, providers),
+    [selectedModel, providers],
+  )
+  const selectedModelDefaultReasoning = useMemo(
+    () => resolveDefaultReasoning(selectedModel, providers),
+    [selectedModel, providers],
+  )
+  const reasoningChoices = useMemo(
+    () => buildReasoningChoices(selectedModelReasoningMode),
+    [selectedModelReasoningMode],
+  )
+
+  useEffect(() => {
+    if (reasoningChoices.length === 0) {
+      if (selectedReasoning !== '') {
+        setSelectedReasoning('')
+      }
+      return
+    }
+    if (
+      selectedReasoning === '' ||
+      !reasoningChoices.some((choice) => choice.value === selectedReasoning)
+    ) {
+      // Prefer the model's configured default so admins can flip it via
+      // settings.json (matching the CLI behavior). Fall back to the first
+      // choice when the config omits a usable default.
+      const fromConfig = reasoningChoices.find(
+        (choice) => choice.value === selectedModelDefaultReasoning,
+      )
+      const initial = fromConfig?.value ?? reasoningChoices[0]?.value ?? ''
+      setSelectedReasoning(initial)
+    }
+  }, [reasoningChoices, selectedReasoning, selectedModelDefaultReasoning])
 
   useEffect(() => {
     const textarea = textareaRef.current
@@ -59,23 +103,39 @@ function Composer({
   }, [value])
 
   useEffect(() => {
-    if (!modelMenuOpen) {
+    if (!pickerOpen) {
       return
     }
 
     const closeOnOutsideClick = (event: Event) => {
       if (
-        modelPickerRef.current &&
+        pickerRef.current &&
         event.target instanceof Node &&
-        !modelPickerRef.current.contains(event.target)
+        !pickerRef.current.contains(event.target)
       ) {
-        setModelMenuOpen(false)
+        setPickerOpen(false)
       }
     }
 
     document.addEventListener('pointerdown', closeOnOutsideClick)
     return () => document.removeEventListener('pointerdown', closeOnOutsideClick)
-  }, [modelMenuOpen])
+  }, [pickerOpen])
+
+  const triggerLabel = useMemo(() => {
+    if (!selectedModel) {
+      return 'No enabled model'
+    }
+    const reasoningLabel = reasoningChoices.find(
+      (choice) => choice.value === selectedReasoning,
+    )?.label
+    if (!reasoningLabel) {
+      return selectedModel.modelName
+    }
+    return `${selectedModel.modelName} ${reasoningLabel}`
+  }, [selectedModel, reasoningChoices, selectedReasoning])
+
+  const canSend =
+    (value.trim().length > 0 || attachments.length > 0) && !busy && selectedModel !== null
 
   const send = () => {
     if (!canSend) {
@@ -87,6 +147,7 @@ function Composer({
         providerId: selectedModel?.providerId ?? null,
         credentialId: selectedModel?.credentialId ?? null,
         modelId: selectedModel?.modelId ?? null,
+        reasoningEffort: reasoningChoices.length > 0 ? selectedReasoning : null,
       },
       attachments,
     )
@@ -202,43 +263,82 @@ function Composer({
             </button>
           </div>
           <div className="composer-action-group">
-            <div className="composer-model-picker" ref={modelPickerRef}>
+            <div className="composer-model-picker" ref={pickerRef}>
               <button
                 type="button"
                 className="composer-model-trigger"
-                aria-haspopup="listbox"
-                aria-expanded={modelMenuOpen}
-                onClick={() => setModelMenuOpen((open) => !open)}
+                aria-haspopup="dialog"
+                aria-expanded={pickerOpen}
+                onClick={() => setPickerOpen((open) => !open)}
                 disabled={selectableModels.length === 0}
                 title={selectedModel?.label ?? 'Enable a provider in Settings'}
               >
-                <span>{selectedModelTriggerLabel ?? 'No enabled model'}</span>
+                <span>{triggerLabel}</span>
                 <ChevronDown size={14} aria-hidden="true" />
               </button>
-              {modelMenuOpen ? (
-                <div className="composer-model-menu" role="listbox" aria-label="Model">
-                  {selectableModels.map((model) => (
-                    <button
-                      type="button"
-                      key={model.id}
-                      className={
-                        model.id === selectedModel?.id ?
-                          'composer-model-option selected'
-                        : 'composer-model-option'
-                      }
-                      role="option"
-                      aria-selected={model.id === selectedModel?.id}
-                      onClick={() => {
-                        setSelectedModelId(model.id)
-                        setModelMenuOpen(false)
-                      }}
-                    >
-                      <span>{model.label}</span>
-                      {model.id === selectedModel?.id ? (
-                        <Check size={15} aria-hidden="true" />
-                      ) : null}
-                    </button>
-                  ))}
+              {pickerOpen ? (
+                <div
+                  className="composer-model-menu"
+                  role="dialog"
+                  aria-label="Model and reasoning"
+                >
+                  <div className="composer-picker-column" aria-label="Model">
+                    <div className="composer-picker-header">Model</div>
+                    <div className="composer-picker-list">
+                      {selectableModels.map((model) => (
+                        <button
+                          type="button"
+                          key={model.id}
+                          className={
+                            model.id === selectedModel?.id ?
+                              'composer-model-option selected'
+                            : 'composer-model-option'
+                          }
+                          role="option"
+                          aria-selected={model.id === selectedModel?.id}
+                          onClick={() => {
+                            setSelectedModelId(model.id)
+                            setPickerOpen(false)
+                          }}
+                        >
+                          <span>{model.label}</span>
+                          {model.id === selectedModel?.id ? (
+                            <Check size={15} aria-hidden="true" />
+                          ) : null}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {reasoningChoices.length > 0 ? (
+                    <div className="composer-picker-column" aria-label="Reasoning">
+                      <div className="composer-picker-header">Reasoning</div>
+                      <div className="composer-picker-list">
+                        {reasoningChoices.map((choice) => (
+                          <button
+                            type="button"
+                            key={choice.value}
+                            className={
+                              choice.value === selectedReasoning ?
+                                'composer-model-option selected'
+                              : 'composer-model-option'
+                            }
+                            role="option"
+                            aria-selected={choice.value === selectedReasoning}
+                            onClick={() => {
+                              setSelectedReasoning(choice.value)
+                              setPickerOpen(false)
+                            }}
+                            title={choice.description}
+                          >
+                            <span>{choice.label}</span>
+                            {choice.value === selectedReasoning ? (
+                              <Check size={15} aria-hidden="true" />
+                            ) : null}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -303,3 +403,96 @@ function fileToImageAttachment(file: File): Promise<MessageAttachment> {
 }
 
 export default Composer
+
+function resolveReasoningMode(
+  model: SelectableModel | null,
+  providers: ProviderConfig[],
+): ModelReasoningMode {
+  if (!model) {
+    return 'none'
+  }
+  const provider = providers.find((item) => item.id === model.providerId)
+  if (!provider) {
+    return 'none'
+  }
+  const providerModel = provider.models.find((item) => item.id === model.modelId)
+  if (!providerModel) {
+    return 'none'
+  }
+  const raw = (providerModel.reasoningMode ?? '').toString().trim().toLowerCase()
+  if (raw === 'toggle' || raw === 'effort' || raw === 'none') {
+    return raw
+  }
+  // Mirror the inference used in src/state/appState.ts so the picker stays
+  // consistent with whatever the rest of the desktop considers "thinking only".
+  const combined = `${providerModel.id} ${providerModel.name}`.toLowerCase()
+  if (combined.includes('minimax-m3')) {
+    return 'toggle'
+  }
+  return 'none'
+}
+
+function resolveDefaultReasoning(
+  model: SelectableModel | null,
+  providers: ProviderConfig[],
+): string {
+  if (!model) {
+    return ''
+  }
+  const provider = providers.find((item) => item.id === model.providerId)
+  if (!provider) {
+    return ''
+  }
+  const providerModel = provider.models.find((item) => item.id === model.modelId)
+  if (!providerModel) {
+    return ''
+  }
+  const mode = resolveReasoningMode(model, providers)
+  const raw = (providerModel.defaultReasoning ?? '').toString().trim().toLowerCase()
+  if (mode === 'toggle') {
+    // Config stores the wire value (`off` / `on`) but the picker exposes
+    // `low` / `medium` / `high` / `xhigh`. Map `off` → Low and `on` → Medium
+    // (a balanced "thinking on" default) so the desktop mirrors the CLI.
+    return raw === 'on' ? 'medium' : 'low'
+  }
+  // Effort mode: the picker values match the config values directly.
+  return raw
+}
+
+function buildReasoningChoices(mode: ModelReasoningMode): ReasoningChoice[] {
+  if (mode === 'toggle') {
+    // Thinking-only models: the same Low/Medium/High/Extra High ladder as
+    // effort-mode is shown so the desktop and CLI share the same labels.
+    // Low collapses to `off` on the wire, the rest collapse to `on`.
+    return [
+      { value: 'low', label: 'Low', description: 'No thinking output.' },
+      {
+        value: 'medium',
+        label: 'Medium',
+        description: 'Enable thinking output (balanced).',
+      },
+      {
+        value: 'high',
+        label: 'High',
+        description: 'Enable thinking output (deeper).',
+      },
+      {
+        value: 'xhigh',
+        label: 'Extra High',
+        description: 'Enable thinking output (deepest).',
+      },
+    ]
+  }
+  if (mode === 'effort') {
+    return [
+      { value: 'minimal', label: 'Minimal', description: 'Fastest responses.' },
+      { value: 'low', label: 'Low', description: 'Light reasoning for simple edits.' },
+      { value: 'medium', label: 'Medium', description: 'Balanced reasoning for normal coding work.' },
+      { value: 'high', label: 'High', description: 'More reasoning for harder bugs.' },
+      { value: 'xhigh', label: 'Extra High', description: 'Maximum reasoning for complex debugging.' },
+    ]
+  }
+  return []
+}
+
+export type { ReasoningChoice }

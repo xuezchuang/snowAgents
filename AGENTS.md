@@ -17,7 +17,7 @@ The current development focus is tool-calling experiments. Treat trace quality a
 
 The project agent is a code editing assistant only. It may search files and code, read workspace files, analyze code, modify code, apply patches, show diffs, and read IDE/compiler/linter diagnostics when available.
 
-Do not automatically execute scripts, shell commands, installers, package managers, build commands, test commands, deploy commands, or unsafe tools. Do not run `.bat`, `.cmd`, `.ps1`, `.sh`, `.exe`, `.msi`, or similar files. Do not use generic shell tools such as `execute_command`, `run_shell`, `terminal`, or `powershell`. Do not install packages, download and execute scripts, or access files outside the workspace.
+Do not automatically execute scripts, shell commands, installers, package managers, build commands, test commands, deploy commands, or unsafe tools. Do not install packages, download and execute scripts, or access files outside the workspace.
 
 If build or test support is needed later, implement explicit safe tools such as `build_solution` or `run_tests` with fixed command templates, workspace confinement, trace output, and user confirmation. Do not expose arbitrary shell execution.
 

@@ -153,7 +153,12 @@ function Workspace({
 
   const runTask = async (
     prompt: string,
-    selection: { providerId: string | null; credentialId: string | null; modelId: string | null },
+    selection: {
+      providerId: string | null
+      credentialId: string | null
+      modelId: string | null
+      reasoningEffort: string | null
+    },
     attachments: MessageAttachment[] = [],
   ) => {
     if (!activeProject) {
@@ -223,6 +228,7 @@ function Workspace({
         providerId: selection.providerId,
         credentialId: selection.credentialId,
         modelId: selection.modelId,
+        reasoningEffort: selection.reasoningEffort,
       })
       const assistantMessage = createAssistantMessage(
         run.taskId,

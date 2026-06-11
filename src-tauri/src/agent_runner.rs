@@ -1274,9 +1274,12 @@ fn normalize_model_reasoning_effort(
         .trim()
         .to_ascii_lowercase();
     match resolved_model_reasoning_mode(model) {
+        // For thinking-only models (e.g. minimax-m3), the UI exposes
+        // Low/Medium/High/Extra High but only Low vs others is meaningful:
+        // Low turns thinking off, anything above turns thinking on.
         "toggle" => match value.as_str() {
-            "on" | "minimal" | "low" | "medium" | "high" => Some("on".to_string()),
-            "off" | "none" => Some("off".to_string()),
+            "on" | "minimal" | "medium" | "high" | "xhigh" => Some("on".to_string()),
+            "off" | "none" | "low" => Some("off".to_string()),
             _ => None,
         },
         "effort" => match value.as_str() {
@@ -1407,23 +1410,35 @@ fn build_chat_completion_request(
         "stream": uses_streaming,
     });
 
-    if let Some(reasoning_effort) = selected.reasoning_effort.as_deref() {
-        if selected
-            .model
-            .as_ref()
-            .map(resolved_model_reasoning_mode)
-            == Some("toggle")
-        {
-            if matches!(reasoning_effort, "off" | "none") {
-                request_body["reasoning"] = json!({ "effort": "none" });
-                request_body["reasoning_effort"] = json!("none");
-            } else {
-                request_body["reasoning"] = json!({ "effort": "medium" });
-                request_body["reasoning_effort"] = json!("medium");
-            }
-        } else {
-            request_body["reasoning_effort"] = json!(reasoning_effort);
-        }
+    let is_toggle_mode = selected
+        .model
+        .as_ref()
+        .map(resolved_model_reasoning_mode)
+        == Some("toggle");
+
+    if is_toggle_mode {
+        // MiniMax-M3 via /v1/chat/completions:
+        // - `thinking` is a top-level object, not `reasoning.effort`
+        //   (that shape belongs to /v1/responses and is silently dropped
+        //   on this endpoint).
+        // - Valid `type` values are `adaptive` and `disabled`. `enabled`
+        //   returns HTTP 400.
+        // - Default is `adaptive` (thinking on); only flip to `disabled`
+        //   when the user explicitly asks for off via --reasoning off|none.
+        // - `reasoning_split: true` surfaces the thinking into a separate
+        //   `reasoning_content` field in the response; without it the
+        //   thinking stays embedded inside `content` as a `<think>` tag,
+        //   which the streaming parser does not extract.
+        request_body["reasoning_split"] = json!(true);
+        let thinking_type = match selected.reasoning_effort.as_deref() {
+            Some("off") | Some("none") => "disabled",
+            _ => "adaptive",
+        };
+        request_body["thinking"] = json!({ "type": thinking_type });
+    } else if let Some(reasoning_effort) = selected.reasoning_effort.as_deref() {
+        // Other providers (e.g. OpenAI o1/o3) accept top-level
+        // `reasoning_effort`.
+        request_body["reasoning_effort"] = json!(reasoning_effort);
     }
 
     if let Some(tools) = tools {

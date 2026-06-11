@@ -1924,12 +1924,48 @@ button:focus-visible {
   right: 0;
   bottom: calc(100% + 8px);
   z-index: 12;
-  width: min(240px, calc(100vw - 48px));
+  width: auto;
+  max-width: min(560px, calc(100vw - 48px));
+  display: flex;
+  align-items: stretch;
+  gap: 0;
   border: 1px solid #d8dde7;
   border-radius: 10px;
   padding: 6px;
   background: #ffffff;
   box-shadow: 0 14px 32px rgb(15 23 42 / 16%);
+}
+
+.composer-picker-column {
+  min-width: 180px;
+  max-width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+}
+
+.composer-picker-column + .composer-picker-column {
+  border-left: 1px solid #e4e7ec;
+  padding-left: 8px;
+  margin-left: 4px;
+}
+
+.composer-picker-header {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #667085;
+  padding: 4px 8px 2px;
+}
+
+.composer-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 280px;
+  overflow-y: auto;
 }
 
 .composer-model-option {
@@ -3522,6 +3558,14 @@ pre {
   border-radius: 10px;
   background: #2b2b2b;
   box-shadow: 0 18px 40px rgb(0 0 0 / 42%);
+}
+
+.app-root.codex-style .composer-picker-column + .composer-picker-column {
+  border-left-color: #383838;
+}
+
+.app-root.codex-style .composer-picker-header {
+  color: #9aa3ad;
 }
 
 .app-root.codex-style .composer-model-option {
