@@ -5411,7 +5411,7 @@ pre {
 .selected-models-row {
   min-height: 44px;
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(140px, 0.5fr) minmax(150px, 0.45fr);
+  grid-template-columns: minmax(220px, 1fr) minmax(180px, 0.6fr) minmax(120px, 0.35fr) minmax(150px, 0.45fr);
   gap: 12px;
   align-items: center;
   padding: 0 12px;
@@ -5441,6 +5441,24 @@ pre {
 
 .selected-model-display input {
   min-height: 32px;
+  padding: 5px 8px;
+}
+
+.selected-model-reasoning {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.selected-model-reasoning select {
+  min-height: 32px;
+  min-width: 88px;
+  border: 1px solid #2d3540;
+  border-radius: 8px;
+  background: #20242b;
+  color: #edf2f7;
   padding: 5px 8px;
 }
 

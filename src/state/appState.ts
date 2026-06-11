@@ -1,4 +1,9 @@
-import type { ProviderConfig } from '../types/provider'
+import type {
+  ModelDefaultReasoning,
+  ModelReasoningMode,
+  ProviderConfig,
+  ProviderModel,
+} from '../types/provider'
 import { codeBuddyOpenAiBaseUrl, minimaxOpenAiBaseUrl } from '../types/provider'
 import type { ProjectSession } from '../types/project'
 import type { AppSettings, UiPreferences } from '../types/settings'
@@ -260,7 +265,9 @@ function mergeProviders(providers: ProviderConfig[]): ProviderConfig[] {
           ? true
           : storedProvider?.baseUrlLocked ?? provider.baseUrlLocked,
       credentials: normalizeProviderCredentials(storedProvider ?? provider),
-      models: storedProvider?.models?.length ? storedProvider.models : provider.models,
+      models: normalizeProviderModels(
+        storedProvider?.models?.length ? storedProvider.models : provider.models,
+      ),
     }
   })
   const customProviders = providers.filter(
@@ -293,6 +300,59 @@ function normalizeProviderCredentials(provider: ProviderConfig): ProviderConfig[
     ]
   }
   return []
+}
+
+function normalizeProviderModels(models: ProviderModel[]): ProviderModel[] {
+  return models.map((model) => {
+    const id = model.id.trim()
+    const name = (model.name ?? '').trim() || id
+    const reasoningMode = normalizeReasoningMode(model.reasoningMode, id, name)
+    return {
+      ...model,
+      id,
+      name,
+      reasoningMode,
+      defaultReasoning: normalizeDefaultReasoning(reasoningMode, model.defaultReasoning),
+    }
+  })
+}
+
+function normalizeReasoningMode(
+  value: string | undefined,
+  modelId: string,
+  modelName: string,
+): ModelReasoningMode {
+  const inferred = inferReasoningMode(modelId, modelName)
+  if (inferred !== 'none' && (!value || value === 'none')) {
+    return inferred
+  }
+  if (value === 'toggle' || value === 'effort' || value === 'none') {
+    return value
+  }
+  return inferred
+}
+
+function normalizeDefaultReasoning(
+  mode: ModelReasoningMode,
+  value: string | undefined,
+): ModelDefaultReasoning {
+  if (mode === 'toggle') {
+    return value === 'on' ? 'on' : 'off'
+  }
+  if (mode === 'effort') {
+    return value === 'minimal' ||
+      value === 'low' ||
+      value === 'medium' ||
+      value === 'high'
+      ? value
+      : 'medium'
+  }
+  return 'off'
+}
+
+function inferReasoningMode(modelId: string, modelName: string): ModelReasoningMode {
+  const normalized = `${modelId} ${modelName}`.toLowerCase()
+  return normalized.includes('minimax-m3') ? 'toggle' : 'none'
 }
 
 function emptyPersistedWorkspaceState(): PersistedWorkspaceState {

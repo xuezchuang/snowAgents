@@ -133,6 +133,13 @@ export function fetchMiniMaxModels(apiKey: string): Promise<ProviderModel[]> {
   return call<ProviderModel[]>('fetch_minimax_models', { apiKey })
 }
 
+export function fetchOpenAiCompatibleModels(
+  baseUrl: string,
+  apiKey: string,
+): Promise<ProviderModel[]> {
+  return call<ProviderModel[]>('fetch_openai_compatible_models', { baseUrl, apiKey })
+}
+
 export async function browseDirectory(title: string): Promise<string | null> {
   assertTauriBackend()
   const selected = await open({

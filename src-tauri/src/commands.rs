@@ -397,15 +397,16 @@ pub fn update_settings(
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MiniMaxModelListResponse {
-    data: Vec<MiniMaxModel>,
+struct ModelListResponse {
+    data: Vec<ModelListItem>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MiniMaxModel {
+struct ModelListItem {
     id: String,
     created: Option<i64>,
+    #[serde(alias = "owned_by")]
     owned_by: Option<String>,
 }
 
@@ -434,19 +435,90 @@ pub async fn fetch_minimax_models(api_key: String) -> Result<Vec<ProviderModel>,
         ));
     }
 
-    let parsed = serde_json::from_str::<MiniMaxModelListResponse>(&body)
+    let parsed = serde_json::from_str::<ModelListResponse>(&body)
         .map_err(|error| format!("MiniMax model list response parse failed: {error}"))?;
 
     Ok(parsed
         .data
         .into_iter()
-        .map(|model| ProviderModel {
-            name: model.id.clone(),
-            id: model.id,
-            enabled: false,
-            credential_id: String::new(),
-            owned_by: model.owned_by,
-            created: model.created,
+        .map(|model| {
+            let reasoning_mode = model_reasoning_mode(&model.id);
+            ProviderModel {
+                name: model.id.clone(),
+                id: model.id,
+                enabled: false,
+                credential_id: String::new(),
+                reasoning_mode: reasoning_mode.to_string(),
+                default_reasoning: model_default_reasoning(reasoning_mode).to_string(),
+                owned_by: model.owned_by,
+                created: model.created,
+            }
         })
         .collect())
 }
+
+#[tauri::command]
+pub async fn fetch_openai_compatible_models(
+    base_url: String,
+    api_key: String,
+) -> Result<Vec<ProviderModel>, String> {
+    let base_url = base_url.trim().trim_end_matches('/');
+    if base_url.is_empty() {
+        return Err("Base URL is required.".to_string());
+    }
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        return Err("API key is required.".to_string());
+    }
+
+    let url = format!("{base_url}/models");
+    let response = reqwest::Client::new()
+        .get(&url)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Model list request failed: {error}"))?;
+
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!(
+            "Model list request failed. status={}; body={}",
+            status.as_u16(),
+            body
+        ));
+    }
+
+    let parsed = serde_json::from_str::<ModelListResponse>(&body)
+        .map_err(|error| format!("Model list response parse failed: {error}"))?;
+
+    Ok(parsed
+        .data
+        .into_iter()
+        .map(|model| {
+            let reasoning_mode = model_reasoning_mode(&model.id);
+            ProviderModel {
+                name: model.id.clone(),
+                id: model.id,
+                enabled: false,
+                credential_id: String::new(),
+                reasoning_mode: reasoning_mode.to_string(),
+                default_reasoning: model_default_reasoning(reasoning_mode).to_string(),
+                owned_by: model.owned_by,
+                created: model.created,
+            }
+        })
+        .collect())
+}
+fn model_reasoning_mode(model_id: &str) -> &'static str {
+    if model_id.eq_ignore_ascii_case("MiniMax-M3") {
+        "toggle"
+    } else {
+        "none"
+    }
+}
+
+fn model_default_reasoning(_reasoning_mode: &str) -> &'static str {
+    "off"
+}
+

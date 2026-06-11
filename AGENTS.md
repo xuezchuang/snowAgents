@@ -146,15 +146,16 @@ The VSIX should remain a semantic bridge. Model orchestration, task planning, pa
 
 ## Verification
 
-After any code change in this repository, compile the main desktop release before reporting completion:
+After any code change in this repository, run both compile checks before reporting completion:
 
 ```text
-npm run tauri build
+build-codeforge-cli.bat
+build-release.bat
 ```
 
-The default test flow is to run `build-release.bat` for Release compile verification first. `build-release-installer.bat` is installer-only and should not be executed unless installer output is explicitly required.
+Run `build-codeforge-cli.bat` first for the CLI binary, then `build-release.bat` for the desktop Release binary. `build-release-installer.bat` is installer-only and should not be executed unless installer output is explicitly required.
 
-This is the required release verification for code edits. If the release build fails, inspect the concrete error, fix the cause when it is in scope, and rerun the release build. If the build cannot be run, report the blocker explicitly.
+These are the required verification checks for code edits. If either build fails, inspect the concrete error, fix the cause when it is in scope, and rerun the failed build. If either build cannot be run, report the blocker explicitly.
 
 For documentation-only edits, use the smallest safe check that proves the change, such as direct file review or `git diff --check`.
 

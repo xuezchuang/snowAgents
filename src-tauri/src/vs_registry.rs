@@ -106,6 +106,10 @@ pub struct ProviderModel {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub credential_id: String,
+    #[serde(default = "default_model_reasoning_mode")]
+    pub reasoning_mode: String,
+    #[serde(default = "default_model_default_reasoning")]
+    pub default_reasoning: String,
     #[serde(default)]
     pub owned_by: Option<String>,
     #[serde(default)]
@@ -276,6 +280,11 @@ fn import_codebuddy_models(path: &Path) -> Option<Vec<ProviderConfig>> {
                 name: model.id.trim().to_string(),
                 enabled: true,
                 credential_id: credential_id.clone(),
+                reasoning_mode: normalize_model_reasoning_mode("", &model.id, &model.id),
+                default_reasoning: normalize_model_default_reasoning(
+                    &normalize_model_reasoning_mode("", &model.id, &model.id),
+                    "",
+                ),
                 owned_by: Some(model.vendor.trim().to_string()).filter(|value| !value.is_empty()),
                 created: None,
             });
@@ -405,6 +414,56 @@ fn default_workspace_history_days() -> u32 {
     7
 }
 
+fn default_model_reasoning_mode() -> String {
+    "none".to_string()
+}
+
+fn default_model_default_reasoning() -> String {
+    "off".to_string()
+}
+
+fn normalize_model_reasoning_mode(value: &str, model_id: &str, model_name: &str) -> String {
+    let inferred = infer_model_reasoning_mode(model_id, model_name);
+    if inferred != "none" && value.trim().is_empty() {
+        return inferred.to_string();
+    }
+    match value.trim().to_ascii_lowercase().as_str() {
+        "toggle" => "toggle".to_string(),
+        "effort" => "effort".to_string(),
+        "none" if inferred == "none" => "none".to_string(),
+        "none" => inferred.to_string(),
+        _ => inferred.to_string(),
+    }
+}
+
+fn normalize_model_default_reasoning(reasoning_mode: &str, value: &str) -> String {
+    match reasoning_mode {
+        "toggle" => {
+            if value.eq_ignore_ascii_case("on") {
+                "on".to_string()
+            } else {
+                "off".to_string()
+            }
+        }
+        "effort" => match value.trim().to_ascii_lowercase().as_str() {
+            "minimal" => "minimal".to_string(),
+            "low" => "low".to_string(),
+            "high" => "high".to_string(),
+            _ => "medium".to_string(),
+        },
+        _ => "off".to_string(),
+    }
+}
+
+fn infer_model_reasoning_mode(model_id: &str, model_name: &str) -> &'static str {
+    let text = format!("{model_id} {model_name}").to_ascii_lowercase();
+    if text.contains("minimax-m3") {
+        "toggle"
+    } else {
+        "none"
+    }
+}
+
 fn default_providers() -> Vec<ProviderConfig> {
     vec![
         codex_cli_provider(),
@@ -517,6 +576,11 @@ fn provider_model(id: &str, name: &str) -> ProviderModel {
         name: name.to_string(),
         enabled: false,
         credential_id: String::new(),
+        reasoning_mode: normalize_model_reasoning_mode("", id, name),
+        default_reasoning: normalize_model_default_reasoning(
+            &normalize_model_reasoning_mode("", id, name),
+            "",
+        ),
         owned_by: None,
         created: None,
     }
@@ -578,6 +642,19 @@ fn normalize_providers(providers: Vec<ProviderConfig>) -> Vec<ProviderConfig> {
                             },
                             enabled: model.enabled,
                             credential_id: String::new(),
+                            reasoning_mode: normalize_model_reasoning_mode(
+                                &model.reasoning_mode,
+                                &model.id,
+                                &model.name,
+                            ),
+                            default_reasoning: normalize_model_default_reasoning(
+                                &normalize_model_reasoning_mode(
+                                    &model.reasoning_mode,
+                                    &model.id,
+                                    &model.name,
+                                ),
+                                &model.default_reasoning,
+                            ),
                             owned_by: model.owned_by,
                             created: model.created,
                         })
@@ -604,6 +681,19 @@ fn normalize_providers(providers: Vec<ProviderConfig>) -> Vec<ProviderConfig> {
                         &model.credential_id,
                         &default_credential_id,
                         &credentials,
+                    ),
+                    reasoning_mode: normalize_model_reasoning_mode(
+                        &model.reasoning_mode,
+                        &model.id,
+                        &model.name,
+                    ),
+                    default_reasoning: normalize_model_default_reasoning(
+                        &normalize_model_reasoning_mode(
+                            &model.reasoning_mode,
+                            &model.id,
+                            &model.name,
+                        ),
+                        &model.default_reasoning,
                     ),
                     owned_by: model.owned_by,
                     created: model.created,

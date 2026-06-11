@@ -13,9 +13,15 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { fetchMiniMaxModels } from '../api/tauriApi'
+import { fetchMiniMaxModels, fetchOpenAiCompatibleModels } from '../api/tauriApi'
 import { defaultProviders } from '../state/appState'
-import type { ProviderConfig, ProviderCredential, ProviderModel } from '../types/provider'
+import type {
+  ModelDefaultReasoning,
+  ModelReasoningMode,
+  ProviderConfig,
+  ProviderCredential,
+  ProviderModel,
+} from '../types/provider'
 import { minimaxOpenAiBaseUrl, providerTypeLabels } from '../types/provider'
 
 interface ProviderSettingsProps {
@@ -182,20 +188,17 @@ function ProviderSettings({ providers, onProvidersChanged }: ProviderSettingsPro
   }
 
   const fetchModels = async (card: ProviderKeyCard) => {
-    if (!isMiniMax(card.provider)) {
-      setFetchStateByCardId((current) => ({
-        ...current,
-        [card.id]: {
-          status: 'error',
-          message: 'Fetch models is currently implemented for MiniMax only.',
-        },
-      }))
-      return
-    }
     if (!card.credential.apiKey.trim()) {
       setFetchStateByCardId((current) => ({
         ...current,
         [card.id]: { status: 'error', message: 'API key is required.' },
+      }))
+      return
+    }
+    if (!isMiniMax(card.provider) && !card.provider.baseUrl.trim()) {
+      setFetchStateByCardId((current) => ({
+        ...current,
+        [card.id]: { status: 'error', message: 'Base URL is required.' },
       }))
       return
     }
@@ -205,7 +208,9 @@ function ProviderSettings({ providers, onProvidersChanged }: ProviderSettingsPro
         ...current,
         [card.id]: { status: 'not-fetched', message: 'Fetching...' },
       }))
-      const fetchedModels = await fetchMiniMaxModels(card.credential.apiKey)
+      const fetchedModels = isMiniMax(card.provider)
+        ? await fetchMiniMaxModels(card.credential.apiKey)
+        : await fetchOpenAiCompatibleModels(card.provider.baseUrl, card.credential.apiKey)
       setModelCatalogs((current) => ({ ...current, [card.id]: fetchedModels }))
       setFetchStateByCardId((current) => ({
         ...current,
@@ -433,6 +438,20 @@ function ProviderSettings({ providers, onProvidersChanged }: ProviderSettingsPro
                       </div>
                     </label>
                     <label className="provider-key-field">
+                      <span>Base URL</span>
+                      <input
+                        value={card.provider.baseUrl}
+                        readOnly={card.provider.baseUrlLocked}
+                        onChange={(event) =>
+                          updateProvider(card.provider.id, (provider) => ({
+                            ...provider,
+                            baseUrl: event.target.value,
+                          }))
+                        }
+                        placeholder="http://127.0.0.1:8080/v1"
+                      />
+                    </label>
+                    <label className="provider-key-field">
                       <span>Provider</span>
                       <select
                         value={card.provider.id}
@@ -585,11 +604,13 @@ function ProviderSettings({ providers, onProvidersChanged }: ProviderSettingsPro
           <div className="selected-models-table">
             <div className="selected-models-row selected-models-head">
               <span>Model</span>
+              <span>Reasoning</span>
               <span>Status</span>
               <span>Actions</span>
             </div>
             {filteredSelectedRows.map((row) => {
               const editing = editingModelKey === row.key
+              const reasoningMode = modelReasoningMode(row.model)
               return (
                 <div className="selected-models-row" key={row.key}>
                   <span className="selected-model-display">
@@ -603,6 +624,53 @@ function ProviderSettings({ providers, onProvidersChanged }: ProviderSettingsPro
                     ) : (
                       row.model.name || row.model.id
                     )}
+                  </span>
+                  <span className="selected-model-reasoning">
+                    <select
+                      value={reasoningMode}
+                      onChange={(event) => {
+                        const nextMode = event.target.value as ModelReasoningMode
+                        updateSelectedModel(row, {
+                          reasoningMode: nextMode,
+                          defaultReasoning: defaultReasoningForMode(
+                            nextMode,
+                            row.model.defaultReasoning,
+                          ),
+                        })
+                      }}
+                    >
+                      <option value="none">None</option>
+                      <option value="toggle">Off / On</option>
+                      <option value="effort">Effort</option>
+                    </select>
+                    {reasoningMode === 'toggle' ? (
+                      <select
+                        value={modelDefaultReasoning(row.model, reasoningMode)}
+                        onChange={(event) =>
+                          updateSelectedModel(row, {
+                            defaultReasoning: event.target.value as ModelDefaultReasoning,
+                          })
+                        }
+                      >
+                        <option value="off">Off</option>
+                        <option value="on">On</option>
+                      </select>
+                    ) : null}
+                    {reasoningMode === 'effort' ? (
+                      <select
+                        value={modelDefaultReasoning(row.model, reasoningMode)}
+                        onChange={(event) =>
+                          updateSelectedModel(row, {
+                            defaultReasoning: event.target.value as ModelDefaultReasoning,
+                          })
+                        }
+                      >
+                        <option value="minimal">Minimal</option>
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                      </select>
+                    ) : null}
                   </span>
                   <label className="selected-model-switch">
                     <input
@@ -795,6 +863,8 @@ function applySelectedModels(
       name: (existing?.name ?? option?.name ?? modelId).trim() || modelId,
       enabled: existing?.enabled ?? true,
       credentialId,
+      reasoningMode: modelReasoningMode(existing ?? option ?? source),
+      defaultReasoning: modelDefaultReasoning(existing ?? option ?? source),
     })
   }
 
@@ -882,6 +952,8 @@ function normalizeModels(
         name: (model.name ?? '').trim() || id,
         enabled: Boolean(model.enabled),
         credentialId,
+        reasoningMode: modelReasoningMode(model),
+        defaultReasoning: modelDefaultReasoning(model),
       }
     })
     .filter((model) => model.id.length > 0)
@@ -895,6 +967,51 @@ function createCredential(provider: ProviderConfig): ProviderCredential {
     enabled: false,
     apiKey: '',
   }
+}
+
+function modelReasoningMode(model: ProviderModel): ModelReasoningMode {
+  const inferred = inferReasoningMode(model.id, model.name)
+  if (inferred !== 'none' && (!model.reasoningMode || model.reasoningMode === 'none')) {
+    return inferred
+  }
+  if (
+    model.reasoningMode === 'toggle' ||
+    model.reasoningMode === 'effort' ||
+    model.reasoningMode === 'none'
+  ) {
+    return model.reasoningMode
+  }
+  return inferred
+}
+
+function modelDefaultReasoning(
+  model: ProviderModel,
+  mode = modelReasoningMode(model),
+): ModelDefaultReasoning {
+  return defaultReasoningForMode(mode, model.defaultReasoning)
+}
+
+function defaultReasoningForMode(
+  mode: ModelReasoningMode,
+  value: string | undefined,
+): ModelDefaultReasoning {
+  if (mode === 'toggle') {
+    return value === 'on' ? 'on' : 'off'
+  }
+  if (mode === 'effort') {
+    return value === 'minimal' ||
+      value === 'low' ||
+      value === 'medium' ||
+      value === 'high'
+      ? value
+      : 'medium'
+  }
+  return 'off'
+}
+
+function inferReasoningMode(modelId: string, modelName: string): ModelReasoningMode {
+  const normalized = `${modelId} ${modelName}`.toLowerCase()
+  return normalized.includes('minimax-m3') ? 'toggle' : 'none'
 }
 
 function uniqueCredentialId(credentials: ProviderCredential[]): string {

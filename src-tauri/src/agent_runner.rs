@@ -59,6 +59,7 @@ struct SelectedModel {
     provider: ProviderConfig,
     credential: Option<ProviderCredential>,
     model_id: String,
+    model: Option<ProviderModel>,
     reasoning_effort: Option<String>,
 }
 
@@ -304,7 +305,7 @@ pub async fn run_agent(
     }
 
     if supports_openai_tool_calls(&selected) {
-        let initial_messages = build_openai_messages(project, &conversation_messages);
+        let initial_messages = build_openai_messages(project, &conversation_messages, input.cli_mode);
         let tool_context = ToolExecutionContext {
             workspace_root: &project.repo_root,
             vs_bridge_endpoint: project.vs_bridge_endpoint.as_deref(),
@@ -329,6 +330,7 @@ pub async fn run_agent(
             project,
             &selected,
             &conversation_messages,
+            input.cli_mode,
             &task_id,
             &mut traces,
             step_index,
@@ -875,12 +877,13 @@ async fn record_plain_provider_completion(
     project: &ProjectSession,
     selected: &SelectedModel,
     conversation_messages: &[ChatMessage],
+    cli_mode: bool,
     task_id: &str,
     traces: &mut Vec<ToolTraceEvent>,
     step_index: u32,
     on_trace: &mut impl FnMut(&ToolTraceEvent),
 ) {
-    match call_provider(project, selected, conversation_messages).await {
+    match call_provider(project, selected, conversation_messages, cli_mode).await {
         Ok(completion) => {
             let message = completion.message;
             let message_chars = message.chars().count();
@@ -1227,11 +1230,22 @@ fn select_model(
         return Err(format!("Model is empty for provider {}", provider.name));
     }
 
+    let selected_model = provider
+        .models
+        .iter()
+        .find(|model| {
+            model_is_enabled_for_credential(model, credential.as_ref()) && model.id == model_id
+        })
+        .cloned();
+    let reasoning_effort =
+        normalize_model_reasoning_effort(reasoning_effort, selected_model.as_ref());
+
     Ok(SelectedModel {
         provider,
         credential,
         model_id,
-        reasoning_effort: normalize_reasoning_effort(reasoning_effort),
+        model: selected_model,
+        reasoning_effort,
     })
 }
 
@@ -1241,6 +1255,37 @@ fn normalize_reasoning_effort(reasoning_effort: Option<&str>) -> Option<String> 
         return None;
     }
     Some(value.to_ascii_lowercase())
+}
+
+fn normalize_model_reasoning_effort(
+    reasoning_effort: Option<&str>,
+    model: Option<&ProviderModel>,
+) -> Option<String> {
+    let explicit = normalize_reasoning_effort(reasoning_effort);
+    let Some(model) = model else {
+        return explicit;
+    };
+    let value = explicit
+        .as_deref()
+        .or_else(|| {
+            let default = model.default_reasoning.trim();
+            (!default.is_empty()).then_some(default)
+        })?
+        .trim()
+        .to_ascii_lowercase();
+    match resolved_model_reasoning_mode(model) {
+        "toggle" => match value.as_str() {
+            "on" | "minimal" | "low" | "medium" | "high" => Some("on".to_string()),
+            "off" | "none" => Some("off".to_string()),
+            _ => None,
+        },
+        "effort" => match value.as_str() {
+            "minimal" | "low" | "medium" | "high" | "xhigh" => Some(value),
+            "on" => Some("medium".to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn default_model_without_model_list(provider: &ProviderConfig) -> Option<String> {
@@ -1334,18 +1379,19 @@ async fn call_provider(
     project: &ProjectSession,
     selected: &SelectedModel,
     conversation_messages: &[ChatMessage],
+    cli_mode: bool,
 ) -> Result<ProviderCompletion, String> {
     let provider_type = selected.provider.provider_type.as_str();
     if provider_type == "claude" {
-        return call_claude(project, selected, conversation_messages).await;
+        return call_claude(project, selected, conversation_messages, cli_mode).await;
     }
     if provider_type == "ollama" {
-        return call_ollama(project, selected, conversation_messages).await;
+        return call_ollama(project, selected, conversation_messages, cli_mode).await;
     }
     if provider_type == CODEX_CLI_PROVIDER_TYPE {
         return Err("Codex CLI provider must be executed through codex exec.".to_string());
     }
-    call_openai_compatible(project, selected, conversation_messages).await
+    call_openai_compatible(project, selected, conversation_messages, cli_mode).await
 }
 
 fn build_chat_completion_request(
@@ -1362,7 +1408,22 @@ fn build_chat_completion_request(
     });
 
     if let Some(reasoning_effort) = selected.reasoning_effort.as_deref() {
-        request_body["reasoning_effort"] = json!(reasoning_effort);
+        if selected
+            .model
+            .as_ref()
+            .map(resolved_model_reasoning_mode)
+            == Some("toggle")
+        {
+            if matches!(reasoning_effort, "off" | "none") {
+                request_body["reasoning"] = json!({ "effort": "none" });
+                request_body["reasoning_effort"] = json!("none");
+            } else {
+                request_body["reasoning"] = json!({ "effort": "medium" });
+                request_body["reasoning_effort"] = json!("medium");
+            }
+        } else {
+            request_body["reasoning_effort"] = json!(reasoning_effort);
+        }
     }
 
     if let Some(tools) = tools {
@@ -1375,6 +1436,15 @@ fn build_chat_completion_request(
     }
 
     request_body
+}
+
+fn resolved_model_reasoning_mode(model: &ProviderModel) -> &str {
+    if model.id.eq_ignore_ascii_case("MiniMax-M3") || model.name.eq_ignore_ascii_case("MiniMax-M3")
+    {
+        "toggle"
+    } else {
+        model.reasoning_mode.trim()
+    }
 }
 
 async fn send_chat_completion(
@@ -1631,8 +1701,9 @@ async fn call_openai_compatible(
     project: &ProjectSession,
     selected: &SelectedModel,
     conversation_messages: &[ChatMessage],
+    cli_mode: bool,
 ) -> Result<ProviderCompletion, String> {
-    let messages = build_openai_messages(project, conversation_messages);
+    let messages = build_openai_messages(project, conversation_messages, cli_mode);
     let request_body = build_chat_completion_request(selected, messages, None);
     let completion = send_chat_completion(selected, &request_body).await?;
     let response_body = completion.response_body.clone();
@@ -1681,6 +1752,7 @@ async fn call_claude(
     project: &ProjectSession,
     selected: &SelectedModel,
     conversation_messages: &[ChatMessage],
+    cli_mode: bool,
 ) -> Result<ProviderCompletion, String> {
     let base_url = selected
         .provider
@@ -1710,7 +1782,7 @@ async fn call_claude(
         "model": selected.model_id,
         "max_tokens": 4096,
         "temperature": selected.provider.temperature,
-        "system": system_prompt(project),
+        "system": system_prompt(project, cli_mode),
         "messages": conversation_messages,
     });
 
@@ -1795,6 +1867,7 @@ async fn call_ollama(
     project: &ProjectSession,
     selected: &SelectedModel,
     conversation_messages: &[ChatMessage],
+    cli_mode: bool,
 ) -> Result<ProviderCompletion, String> {
     let base_url = selected.provider.base_url.trim().trim_end_matches('/');
     if base_url.is_empty() {
@@ -1804,7 +1877,7 @@ async fn call_ollama(
     let url = format!("{base_url}/api/chat");
     let request_body = json!({
         "model": selected.model_id,
-        "messages": build_messages(project, conversation_messages),
+        "messages": build_messages(project, conversation_messages, cli_mode),
         "stream": false,
         "options": {
             "temperature": selected.provider.temperature,
@@ -1929,10 +2002,11 @@ fn sum_optional_tokens(left: Option<u64>, right: Option<u64>) -> Option<u64> {
 fn build_messages(
     project: &ProjectSession,
     conversation_messages: &[ChatMessage],
+    cli_mode: bool,
 ) -> Vec<ChatMessage> {
     let mut messages = vec![ChatMessage {
         role: "system".to_string(),
-        content: system_prompt(project),
+        content: system_prompt(project, cli_mode),
         attachments: Vec::new(),
     }];
     messages.extend(conversation_messages.iter().cloned());
@@ -1942,8 +2016,9 @@ fn build_messages(
 fn build_openai_messages(
     project: &ProjectSession,
     conversation_messages: &[ChatMessage],
+    cli_mode: bool,
 ) -> Vec<Value> {
-    build_messages(project, conversation_messages)
+    build_messages(project, conversation_messages, cli_mode)
         .into_iter()
         .map(openai_chat_message_value)
         .collect()
@@ -1990,14 +2065,19 @@ fn build_codex_cli_prompt(
     conversation_messages: &[ChatMessage],
 ) -> String {
     let mut prompt = String::new();
-    prompt.push_str("You are running as Codex CLI inside CodeForge Desktop.\n");
+    prompt.push_str("You are CodeForge CLI, the command-line coding assistant for the active workspace.\n");
+    prompt.push_str("Do not identify yourself as a desktop app when running in CLI mode.\n");
+    prompt.push_str("Use a plain terminal style: no emoji, no marketing copy, and no generic capability list.\n");
+    prompt.push_str("Do not advertise tools or demo capabilities unless the user asks about them.\n");
+    prompt.push_str("Never mention calculator or arithmetic demo tools unless directly relevant to the user's request.\n");
+    prompt.push_str("For a simple greeting, reply with one short sentence asking what task to work on; do not include examples or bullet lists.\n");
     prompt.push_str(
         "Follow this repository's AGENTS.md and keep all work inside the active workspace.\n",
     );
     prompt.push_str("Do not run package managers, installers, deploy commands, or broad build/test scripts unless the user explicitly asks for that exact command. If verification would require one of those commands, report the command instead.\n");
     prompt.push_str("Keep trace-relevant behavior explicit in your final response: summarize file changes, validation, and any skipped verification.\n\n");
-    prompt.push_str(&format!("Project: {}\n", project.name));
-    prompt.push_str(&format!("Workspace: {}\n\n", project.repo_root));
+    prompt.push_str(&format!("Workspace name: {}\n", project.name));
+    prompt.push_str(&format!("Workspace path: {}\n\n", project.repo_root));
     prompt.push_str("Conversation:\n");
 
     for message in conversation_messages {
@@ -2021,7 +2101,14 @@ fn build_codex_cli_prompt(
     prompt
 }
 
-fn system_prompt(project: &ProjectSession) -> String {
+fn system_prompt(project: &ProjectSession, cli_mode: bool) -> String {
+    if cli_mode {
+        return format!(
+            "You are CodeForge CLI, a command-line coding assistant for the active workspace. Workspace name: \"{}\". Workspace path: {}. Do not identify yourself as a desktop app in CLI mode. Do not infer a specific project name from unrelated prior context; use only the current workspace and the user's request. Use a plain terminal style: no emoji, no marketing copy, and no generic capability list. Do not advertise tools or demo capabilities unless the user asks about them. Never mention calculator or arithmetic demo tools unless directly relevant to the user's request. For a simple greeting, reply with one short sentence asking what task to work on; do not include examples or bullet lists. Internal SnowAgent class or path names may remain unchanged. Prefer Visual Studio context tools when the bridge is connected, and use repository tools when VS context is unavailable or insufficient. Do not claim rg or text search is precise semantic analysis. Do not execute arbitrary shell commands. Answer concisely and use clickable file:line references when relevant.",
+            project.name, project.repo_root
+        );
+    }
+
     format!(
         "You are CodeForge Desktop, a coding assistant for the project \"{}\". Repo root: {}. Internal SnowAgent class or path names may remain unchanged. Prefer Visual Studio context tools when the bridge is connected, and use repository tools when VS context is unavailable or insufficient. Do not claim rg or text search is precise semantic analysis. Do not execute arbitrary shell commands. Answer concisely and use clickable file:line references when relevant.",
         project.name, project.repo_root
@@ -2649,6 +2736,7 @@ mod tests {
                 api_key: "test-key".to_string(),
             }),
             model_id: "test-model".to_string(),
+            model: None,
             reasoning_effort: None,
         }
     }

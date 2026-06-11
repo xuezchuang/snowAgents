@@ -48,7 +48,8 @@ fn main() {
             codeforge_desktop::commands::open_code_link,
             codeforge_desktop::commands::get_settings,
             codeforge_desktop::commands::update_settings,
-            codeforge_desktop::commands::fetch_minimax_models
+            codeforge_desktop::commands::fetch_minimax_models,
+            codeforge_desktop::commands::fetch_openai_compatible_models
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| {
